@@ -154,33 +154,76 @@ def sky_row(y, width, sky, palette, prefix=None):
     return t
 
 
-def kv_line(pairs, palette, sep="  ·  "):
-    """`msgs 22.4k · sess 82 · tools 6.0k` — a compact metric strip."""
-    t = Text()
-    for i, (k, v) in enumerate(pairs):
-        if i:
-            t.append(sep, style=palette["faint"])
-        t.append(f"{k} ", style=palette["dim"])
-        t.append(str(v), style=palette["text"])
-    return t
+EIGHTHS = " ▁▂▃▄▅▆▇█"
 
 
-SPARK = "▁▂▃▄▅▆▇█"
+def barchart(values, height, width, palette, color=None, gutter=8,
+             value_fmt=None, labels=None, highlight_last=True):
+    """A column chart `height` rows tall, drawn with vertical eighth blocks.
 
+    Each value gets an equal share of the width, so 24 hourly values across a
+    wide panel become fat, readable bars rather than a one-cell sparkline. The
+    left gutter carries the top and mid value labels; `labels` (one string per
+    value, blanks allowed) is printed underneath.
 
-def sparkline(values, palette, color=None, empty="·"):
-    """One cell per value, height proportional to the largest value."""
-    if not values:
-        return Text("")
-    top = max(values)
-    t = Text(no_wrap=True, overflow="crop")
-    for v in values:
-        if v <= 0:
-            t.append(empty, style=palette["faint"])
-            continue
-        idx = int((v / top) * (len(SPARK) - 1)) if top > 0 else 0
-        t.append(SPARK[idx], style=color or palette["accent"])
-    return t
+    Returns a list of Text rows: `height` chart rows, then an axis row, then a
+    label row when labels are given.
+    """
+    rows = []
+    if not values or height < 2:
+        return rows
+    top = max(values) or 1.0
+    plot_w = max(8, width - gutter)
+    per = max(1, plot_w // len(values))
+    color = color or palette["accent"]
+
+    # Height in eighths, so a bar can end part way up a cell.
+    eighths = [min(height * 8, int(round(v / top * height * 8))) for v in values]
+
+    for row in range(height):
+        # row 0 is the top of the chart
+        floor_ = (height - row - 1) * 8
+        line = Text(no_wrap=True, overflow="crop")
+        if row == 0:
+            tag = (value_fmt(top) if value_fmt else f"{top:g}")
+            line.append(f"{tag:>{gutter - 1}} ", style=palette["dim"])
+        elif row == height - 1:
+            tag = (value_fmt(0) if value_fmt else "0")
+            line.append(f"{tag:>{gutter - 1}} ", style=palette["faint"])
+        else:
+            line.append(" " * gutter)
+        for i, filled in enumerate(eighths):
+            part = max(0, min(8, filled - floor_))
+            glyph = EIGHTHS[part]
+            style = color
+            if highlight_last and i == len(eighths) - 1:
+                style = f"bold {color}"
+            if part == 0:
+                line.append(" " * per)
+            else:
+                line.append(glyph * per, style=style)
+        rows.append(line)
+
+    axis = Text(no_wrap=True, overflow="crop")
+    axis.append(" " * gutter)
+    axis.append("─" * (per * len(values)), style=palette["border"])
+    rows.append(axis)
+
+    if labels:
+        row = Text(no_wrap=True, overflow="crop")
+        row.append(" " * gutter)
+        used = 0
+        for i, lab in enumerate(labels):
+            if not lab:
+                continue
+            start = i * per
+            if start < used:
+                continue
+            row.append(" " * (start - used))
+            row.append(str(lab)[:per * 2], style=palette["faint"])
+            used = start + len(str(lab)[:per * 2])
+        rows.append(row)
+    return rows
 
 
 # ------------------------------------------------------------------ format

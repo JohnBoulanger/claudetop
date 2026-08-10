@@ -23,16 +23,13 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 
 | Key | View | What it shows |
 |-----|------|---------------|
-| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, 24h and 14d spend charts, and the live session strip. |
+| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, hourly and daily spend charts, and the live session strip. |
 | `s` | Sessions | Every live session and background job, with status, branch, cost and uptime. |
-| `t` | Tree | Sessions with their background jobs nested underneath. Collapse with `←`. |
-| `w` | Worktrees | Ticket worktrees: branch, clean/dirty, ahead/behind, PR state. Needs `worktree_root` in the config. |
 | `a` | Analytics | Activity counters, cache hit rate, cost by model, cost by repo, most-used tools, and today's most expensive sessions. |
 | `m` | Star map | Sessions drawn as a constellation, each with its background jobs orbiting it. |
-| `f` | — | Focus the selected session's terminal window. |
 | `h` | — | Hide every dollar figure, for screen sharing. |
 | `r` | — | Force a refresh. |
-| `T` | — | Cycle the color preset (applies on next launch). |
+| `ctrl+s` | Settings | Theme, hide-costs, usage polling and cache retention, written straight to the config file. |
 | `q` | — | Quit. |
 
 A compact 5h / 7d gauge strip sits under the title in every view, so you never
@@ -71,10 +68,9 @@ pip install .
 
 Then run `claudetop`.
 
-Works on Windows and macOS. Focusing a session window (`f`) uses pywin32 on
-Windows and AppleScript against Terminal / iTerm2 on macOS; everywhere else the
-key just reports that focusing is unavailable and the rest of the app works
-normally.
+Works on Windows and macOS. Nothing in the dashboard is platform-specific; the
+optional pywin32 dependency is only used by the separate Ctrl+Alt+M hotkey
+script in `scripts/`, which raises the dashboard window on Windows.
 
 ## Where the numbers come from
 
@@ -126,10 +122,14 @@ yourself:
 }
 ```
 
+Most of this is editable in the app with `ctrl+s`; the file is the full set.
+
 Presets: `espresso` (default, warm on black), `espresso-warm`, `midnight`,
 `gruvbox`. Any single color in a preset can be overridden by name — `bg`,
 `panel`, `text`, `dim`, `faint`, `accent`, `red`, `green`, `yellow`, `border`,
 `star`. Set `hide_costs` to blank out every dollar figure for screen sharing.
+Colors are compiled into the Textual stylesheet at startup, so a theme change
+lands on the next launch; the settings screen marks which options work that way.
 
 `claudetop --paths` prints the config and cache locations.
 
@@ -140,7 +140,11 @@ caches per-file results. After that only the new tail of each file is read, so
 refreshes are effectively free. The cache lives in the platform cache directory
 and can be deleted at any time; it will rebuild.
 
-## The worktree board on its own
+## The worktree board
 
-`claudetop-wt --json` prints the same worktree data as the `w` view, for use in
-scripts and Claude skills. `claudetop-wt` with no arguments prints a table.
+There is no worktree view in the app — the star map covers the same ground. The
+collector is still shipped as a CLI, because the `/wt` Claude skill reads it:
+`claudetop-wt --json` prints ticket worktrees with branch, clean/dirty,
+ahead/behind and PR state, and `claudetop-wt` with no arguments prints a table.
+It reads `worktree_root`, `worktree_base_dir` and `worktree_org` from the same
+config file.

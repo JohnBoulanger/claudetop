@@ -8,11 +8,11 @@ and never writes to or controls any session:
                                      jobs and the literal text they're
                                      waiting on ("needs")
 
-The 'u' view adds spend and limit usage, which comes from two more places:
+The home view adds spend and limits, which come from two more places:
   ~/.claude/projects/**/*.jsonl  -> transcripts, for cost and activity (stats)
   api.anthropic.com/oauth/usage  -> the 5h / 7d subscription limits (usage)
 
-Run:  python dashboard.py
+Run:  claudetop
 """
 
 import json
@@ -26,7 +26,8 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.widgets import DataTable, Footer, Static, Tree
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Footer, Static
 
 from . import paths
 from . import pricing
@@ -35,8 +36,6 @@ from . import stats
 from . import theme
 from . import usage
 from . import widgets
-from . import focus as winfocus
-from . import worktrees
 
 CONFIG = paths.load_config()
 PALETTE = theme.load(CONFIG)
@@ -75,11 +74,6 @@ BORDER = PALETTE["border"]
 
 TITLE_LINE = f"[{ACCENT}]✻[/] [b {TEXT}]Claude Sessions[/]"
 
-# Subtle starfield strip. Sparse, mostly-dim stars that gently twinkle in place;
-# a small fraction are Claude ✻ sparkles that occasionally warm to terracotta.
-STAR_GLYPHS = ["·", "·", "·", ".", "✦", "✧", "+"]
-STAR_SOFT = PALETTE["star"]  # brightest ordinary star, never pure white
-
 CSS = f"""
 /* The sky is a full-screen layer underneath everything. Any widget that
    paints an opaque background hides it, which is why the panel-based views
@@ -101,7 +95,7 @@ Screen {{
 }}
 
 #banner, #subtitle, #limit-strip, #home, #analytics, #map,
-#table, #tree, #wt-table, Footer {{
+#table, Footer {{
     layer: content;
 }}
 
@@ -122,7 +116,7 @@ Screen {{
     height: auto;
 }}
 
-DataTable, Tree {{
+DataTable {{
     background: {BG};
     color: {TEXT};
     border: round {BORDER};
@@ -135,6 +129,7 @@ DataTable, Tree {{
     background: {BG};
     color: {TEXT};
     height: 1fr;
+    scrollbar-size: 1 1;
 }}
 
 #analytics {{
@@ -156,16 +151,17 @@ DataTable > .datatable--cursor {{
     color: {TEXT};
 }}
 
-Tree > .tree--cursor {{
-    background: {ACCENT} 25%;
+SettingsScreen {{
+    align: center middle;
 }}
 
-Tree > .tree--guides {{
-    color: {BORDER};
-}}
-
-Tree > .tree--guides-hover {{
-    color: {BORDER};
+#settings {{
+    width: 66;
+    height: auto;
+    padding: 1 2;
+    background: {PANEL};
+    color: {TEXT};
+    border: round {ACCENT};
 }}
 
 Footer {{
@@ -424,16 +420,6 @@ def session_detail(session_id):
     return detail
 
 
-def fmt_tokens(n):
-    if not n:
-        return "-"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}k"
-    return str(n)
-
-
 def fmt_cost(c):
     if not c:
         return "-"
@@ -488,21 +474,136 @@ class StarField(Static):
         self.update(t)
 
 
+class SettingsScreen(ModalScreen):
+    """ctrl+s — every setting the config file holds, editable in place.
+
+    Each change is written straight to config.json. Some land immediately;
+    the ones that configure a background thread or the Textual stylesheet are
+    marked, because they only take effect on the next launch.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("ctrl+s", "close", "Close", show=False),
+        Binding("q", "close", "Close", show=False),
+        Binding("up,k", "prev", "Up", show=False),
+        Binding("down,j", "next", "Down", show=False),
+        Binding("left,h", "back", "Previous value", show=False),
+        Binding("right,l,enter,space", "forward", "Next value", show=False),
+    ]
+
+    # key, label, values, formatter, takes effect now?
+    OPTIONS = [
+        ("theme", "Theme", theme.preset_names(), str, False),
+        ("hide_costs", "Hide costs", [False, True],
+         lambda v: "yes" if v else "no", True),
+        ("usage_api", "Usage API", [True, False],
+         lambda v: "on" if v else "off", False),
+        ("usage_poll_seconds", "Limit poll", [30, 60, 120, 300],
+         lambda v: f"every {v}s", False),
+        ("stats_retention_days", "Keep detail", [7, 14, 31, 60, 90],
+         lambda v: f"{v} days", False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="settings")
+
+    def on_mount(self):
+        self._row = 0
+        self._draw()
+
+    # The theme lives one level down in the config, so it reads and writes
+    # differently from the flat options.
+    def _value(self, key):
+        if key == "theme":
+            return PALETTE.get("name", theme.DEFAULT_PRESET)
+        return CONFIG.get(key, paths.DEFAULT_CONFIG.get(key))
+
+    def _set(self, key, value):
+        if key == "theme":
+            theme.save_preset(value)
+            PALETTE["name"] = value
+        else:
+            CONFIG[key] = value
+            paths.update_config(**{key: value})
+        if key == "hide_costs":
+            self.app._hide_costs = bool(value)
+
+    def _step(self, delta):
+        key, _, values, _, live = self.OPTIONS[self._row]
+        current = self._value(key)
+        try:
+            i = values.index(current)
+        except ValueError:
+            i = 0
+        self._set(key, values[(i + delta) % len(values)])
+        self._draw()
+        if not live:
+            self.app.notify("Saved — restart claudetop to apply")
+
+    def action_prev(self):
+        self._row = (self._row - 1) % len(self.OPTIONS)
+        self._draw()
+
+    def action_next(self):
+        self._row = (self._row + 1) % len(self.OPTIONS)
+        self._draw()
+
+    def action_back(self):
+        self._step(-1)
+
+    def action_forward(self):
+        self._step(1)
+
+    def action_close(self):
+        self.dismiss()
+
+    def _draw(self):
+        t = Text(no_wrap=True, overflow="crop")
+        t.append("⚙ Settings\n", style=f"bold {ACCENT}")
+        t.append(f"{paths.config_dir() / paths.CONFIG_FILE}\n\n", style=FAINT)
+
+        for i, (key, label, values, fmt, live) in enumerate(self.OPTIONS):
+            selected = i == self._row
+            current = self._value(key)
+            t.append("▸ " if selected else "  ", style=ACCENT)
+            t.append(f"{label:<14}", style=TEXT if selected else DIM)
+            t.append(fmt(current), style=ACCENT if selected else TEXT)
+            if not live:
+                t.append(" *", style=FAINT)
+            t.append("\n")
+            # The full choice list only unfolds for the row you are on, so the
+            # panel stays a glance rather than a wall.
+            if selected and len(values) > 1:
+                row = Text("      ", no_wrap=True, overflow="ellipsis")
+                for v in values:
+                    chosen = v == current
+                    row.append(f"[{fmt(v)}]" if chosen else f" {fmt(v)} ",
+                               style=ACCENT if chosen else FAINT)
+                    row.append(" ")
+                t.append_text(row)
+                t.append("\n")
+
+        t.append("\n* takes effect on restart\n", style=FAINT)
+        t.append("↑↓ choose   ←→ change   esc close", style=FAINT)
+        self.query_one("#settings", Static).update(t)
+
+
 class SessionDashboard(App):
     CSS = CSS
     TITLE = "Claude Session Manager"
 
+    # The command palette is replaced by the settings screen on ctrl+s.
+    ENABLE_COMMAND_PALETTE = False
+
     BINDINGS = [
         Binding("escape", "go_home", "Home", show=False),
         Binding("s", "show_sessions", "Sessions"),
-        Binding("t", "toggle_view", "Tree"),
-        Binding("w", "toggle_worktrees", "Worktrees"),
         Binding("a", "toggle_analytics", "Analytics"),
         Binding("m", "toggle_map", "Star map"),
-        Binding("f", "focus_selected", "Focus window"),
         Binding("h", "toggle_costs", "Hide costs"),
         Binding("r", "manual_refresh", "Refresh"),
-        Binding("T", "cycle_theme", "Theme"),
+        Binding("ctrl+s", "settings", "Settings"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -511,10 +612,9 @@ class SessionDashboard(App):
         yield Static(TITLE_LINE, id="banner")
         yield Static("", id="subtitle")
         yield Static("", id="limit-strip")
-        yield Static("", id="home")
+        with VerticalScroll(id="home"):
+            yield Static("", id="home-body")
         yield DataTable(id="table", cursor_type="row")
-        yield Tree("Sessions", id="tree")
-        yield DataTable(id="wt-table", cursor_type="row")
         with VerticalScroll(id="analytics"):
             yield Static("", id="analytics-body")
         yield Static("", id="map")
@@ -527,33 +627,22 @@ class SessionDashboard(App):
             "Uptime", "PID",
         )
 
-        tree = self.query_one("#tree", Tree)
-        tree.show_root = False
-        tree.display = False
-
-        wt_table = self.query_one("#wt-table", DataTable)
-        wt_table.add_columns(
-            "Ticket", "Repo", "Branch", "Clean", "Ahead/Behind",
-            "PR", "Bootstrap",
-        )
         self._view_mode = "home"
         self._selected_key = None
-        self._wt_meta = {}
-        self._tree_collapsed = set()
         self._subtitle = ""
         self._hide_costs = bool(CONFIG.get("hide_costs"))
         self._job_states = {}      # for the event meteors
         self._last_prompts = None
         self._tick = 0
-        for widget_id in ("#table", "#tree", "#wt-table", "#analytics", "#map"):
+        for widget_id in ("#table", "#analytics", "#map"):
             self.query_one(widget_id).display = False
 
         self.refresh_sessions()
         self.set_interval(0.2, self.refresh_sessions)
 
-        # Both usage collectors run from the start: the transcript scan is the
-        # slow one (a first full build takes seconds), so the 'u' view should
-        # not have to wait for it, and the session table's costs come from the
+        # Both collectors run from the start: the transcript scan is the slow
+        # one (a first full build takes seconds), so the home view should not
+        # have to wait for it, and the session table's costs come from the
         # same transcripts anyway.
         stats.start_background(
             poll_seconds=5.0,
@@ -571,83 +660,9 @@ class SessionDashboard(App):
     def on_data_table_row_selected(self, event):
         if event.row_key is not None:
             self._selected_key = event.row_key.value
-        self._focus_selected()
 
-    def _focus_worktree_session(self, meta):
-        """Jump to the Claude session working this worktree: match the
-        session's git branch to the worktree branch, else a session whose
-        name mentions the ticket."""
-        branch, ticket = meta.get("branch"), meta.get("ticket", "")
-        sessions = [r for r in getattr(self, "_row_meta", {}).values()
-                    if r.get("focusable")]
-        hit = next((r for r in sessions if branch and r.get("branch") == branch),
-                   None)
-        if hit is None:
-            hit = next((r for r in sessions
-                        if ticket and ticket.lower() in r["name"].lower()), None)
-        if hit:
-            self._focus_window(hit["name"])
-        else:
-            self.notify(f"No running session on {ticket} ({branch or 'no branch'})",
-                        severity="warning")
-
-    def on_tree_node_selected(self, event):
-        data = getattr(event.node, "data", None)
-        if isinstance(data, dict) and data.get("name"):
-            self._focus_window(data["name"])
-
-    @staticmethod
-    def _tree_key(data):
-        """Stable id for a collapsible tree node, so expand/collapse state
-        survives the rebuild on every refresh tick."""
-        if not isinstance(data, dict):
-            return None
-        if data.get("tree_key"):
-            return data["tree_key"]
-        return f"s|{data['session_id']}" if data.get("session_id") else None
-
-    def on_tree_node_collapsed(self, event):
-        key = self._tree_key(getattr(event.node, "data", None))
-        if key:
-            self._tree_collapsed.add(key)
-
-    def on_tree_node_expanded(self, event):
-        key = self._tree_key(getattr(event.node, "data", None))
-        if key:
-            self._tree_collapsed.discard(key)
-
-    def action_focus_selected(self):
-        self._focus_selected()
-
-    def _focus_selected(self):
-        key = self._selected_key
-        if key and key.startswith("wt|"):
-            meta = self._wt_meta.get(key)
-            if meta:
-                self._focus_worktree_session(meta)
-            return
-        meta = getattr(self, "_row_meta", {}).get(key) if key else None
-        if not meta:
-            self.notify("No session selected")
-            return
-        self._focus_window(meta.get("name"))
-
-    def _focus_window(self, name):
-        if not winfocus.available():
-            self.notify("Window focus is only wired up for Windows (pywin32) "
-                        "and macOS (Terminal / iTerm2)", severity="warning")
-            return
-        if not name or name == "(unnamed)":
-            self.notify("Session has no title to match on", severity="warning")
-            return
-        if winfocus.focus_session(name):
-            self.notify(f"Focused window: {name}")
-        else:
-            self.notify(f"No window titled like “{name}” — is it in its own window?",
-                        severity="warning")
-
-    VIEW_WIDGETS = {"home": "#home", "sessions": "#table", "tree": "#tree",
-                    "wt": "#wt-table", "analytics": "#analytics", "map": "#map"}
+    VIEW_WIDGETS = {"home": "#home", "sessions": "#table",
+                    "analytics": "#analytics", "map": "#map"}
 
     def _show_view(self, mode):
         self._view_mode = mode
@@ -668,14 +683,6 @@ class SessionDashboard(App):
     def action_show_sessions(self):
         self._toggle("sessions")
 
-    def action_toggle_view(self):
-        self._toggle("tree")
-
-    def action_toggle_worktrees(self):
-        if self._view_mode != "wt":
-            worktrees.start_background()  # idempotent; scans off the UI thread
-        self._toggle("wt")
-
     def action_toggle_analytics(self):
         self._toggle("analytics")
 
@@ -686,12 +693,8 @@ class SessionDashboard(App):
         self._hide_costs = not self._hide_costs
         self.notify("Costs hidden" if self._hide_costs else "Costs shown")
 
-    def action_cycle_theme(self):
-        name = theme.next_preset(PALETTE.get("name", theme.DEFAULT_PRESET))
-        theme.save_preset(name)
-        # Colors are baked into the Textual CSS at import time, so the swap
-        # lands on the next launch rather than mid-frame.
-        self.notify(f"Theme set to “{name}” — restart claudetop to apply")
+    def action_settings(self):
+        self.push_screen(SettingsScreen())
 
     def refresh_sessions(self):
         self._tick += 1
@@ -735,10 +738,6 @@ class SessionDashboard(App):
 
         if self._view_mode == "sessions":
             self._render_table(rows)
-        elif self._view_mode == "tree":
-            self._render_tree(interactive_rows, by_parent, detached, hidden_old_done)
-        elif self._view_mode == "wt":
-            self._render_wt()
         elif self._view_mode == "home":
             # The panels move slowly, but the sky behind them animates, so the
             # home view redraws at the star clock rather than the data clock.
@@ -753,9 +752,7 @@ class SessionDashboard(App):
 
         total_needing_attention = sum(1 for r in rows if r["status"] == "blocked")
         attn = f" · [b {RED}]{total_needing_attention} need attention[/]" if total_needing_attention else ""
-        if self._view_mode == "wt":
-            subtitle = self._wt_subtitle + attn
-        elif self._view_mode in ("home", "analytics"):
+        if self._view_mode in ("home", "analytics"):
             subtitle = self._data_subtitle(st, u) + attn
         else:
             subtitle = f"{len(rows)} session{'s' if len(rows) != 1 else ''} · polling ~/.claude{attn}"
@@ -800,87 +797,6 @@ class SessionDashboard(App):
                 if key == self._selected_key:
                     table.move_cursor(row=idx)
                     break
-
-    def _render_wt(self):
-        """The worktree board (the /wt skill's table, live). All data comes
-        from worktrees.snapshot() — the collector thread does the git/gh work,
-        so this render is just cache reads and stays cheap on the 0.2s tick."""
-        data = worktrees.snapshot()
-        rows, flags = data["rows"], data["flags"]
-        problem_keys = {(p["ticket"], p["repo"]) for p in flags["problems"]}
-        candidate_tickets = set(flags["ship_done_candidates"])
-
-        table = self.query_one("#wt-table", DataTable)
-        table.clear()
-        self._wt_meta = {}
-
-        for r in sorted(rows, key=lambda r: (r["ticket"], r["repo"])):
-            key = f"wt|{r['ticket']}|{r['repo']}"
-            self._wt_meta[key] = r
-
-            if (r["ticket"], r["repo"]) in problem_keys:
-                ticket_cell = f"[b {RED}]{r['ticket']}[/]"
-            elif r["ticket"] in candidate_tickets:
-                ticket_cell = f"[{GREEN}]{r['ticket']}[/]"
-            else:
-                ticket_cell = r["ticket"]
-
-            if r["dirty"] is None:
-                clean_cell = f"[{FAINT}]?[/]"
-            elif r["dirty"]:
-                clean_cell = f"[{RED}]dirty[/]"
-            else:
-                clean_cell = f"[{DIM}]clean[/]"
-
-            ab = worktrees._fmt_ab(r)
-            ab_cell = f"[{DIM}]{ab}[/]" if ab in ("even",) else ab
-
-            pr = r.get("pr")
-            pr_text = worktrees._fmt_pr(pr)
-            if pr is None:
-                pr_cell = f"[{FAINT}]loading…[/]"
-            elif pr.get("none") or pr.get("error"):
-                pr_cell = f"[{FAINT}]{pr_text}[/]"
-            elif pr.get("state") == "MERGED":
-                pr_cell = f"[{GREEN}]{pr_text}[/]"
-            else:
-                pr_cell = pr_text
-
-            boot = r["bootstrap"]
-            boot_cell = (f"[{RED}]missing[/]" if boot == "missing"
-                         else f"[{FAINT}]{boot}[/]" if boot == "n/a"
-                         else f"[{DIM}]ok[/]")
-
-            table.add_row(
-                ticket_cell, r["repo"], self._truncate(r["branch"] or "?", 28),
-                clean_cell, ab_cell, pr_cell, boot_cell, key=key,
-            )
-
-        # clear() above resets the cursor to row 0, so the 0.2s tick would
-        # undo every arrow keypress. Put it back on the same worktree.
-        if self._selected_key and self._selected_key in self._wt_meta:
-            for idx, key in enumerate(self._wt_meta):
-                if key == self._selected_key:
-                    table.move_cursor(row=idx)
-                    break
-
-        parts = [f"{len(rows)} worktree{'s' if len(rows) != 1 else ''}"]
-        if candidate_tickets:
-            parts.append(f"[{GREEN}]/ship-done ready: "
-                         f"{', '.join(sorted(candidate_tickets))}[/]")
-        if flags["problems"]:
-            parts.append(f"[b {RED}]{len(flags['problems'])} problem"
-                         f"{'s' if len(flags['problems']) != 1 else ''}[/]")
-        o = data["orphans"]
-        n_orphans = len(o["stray_folders"]) + len(o["stale_registrations"])
-        if n_orphans:
-            parts.append(f"[{RED}]{n_orphans} orphan{'s' if n_orphans != 1 else ''}[/]")
-        if not rows:
-            parts = ["no ticket worktrees under C:\\eva-wt (created by /ship)"]
-        age = time.time() - data["scanned_at"] if data["scanned_at"] else None
-        if age is not None and age < 3600:
-            parts.append(f"[{FAINT}]scanned {int(age)}s ago[/]")
-        self._wt_subtitle = " · ".join(parts) + " · enter focuses the ticket's session"
 
     # ------------------------------------------------------- sky integration
 
@@ -1051,20 +967,53 @@ class SessionDashboard(App):
         rate.append(f"{widgets.money(burn['avg_7d'], hide)}/hr", style=DIM)
         rate.append(" average working hour this week", style=FAINT)
         lines.append(rate)
+        return lines
 
-        spark = Text(no_wrap=True, overflow="crop")
-        spark.append("Last 24h   ", style=TEXT)
-        spark.append_text(widgets.sparkline(s["hourly_24h"], PALETTE))
-        peak = max(s["hourly_24h"]) if s["hourly_24h"] else 0
-        spark.append(f"  peak {widgets.money(peak, hide)}/hr", style=FAINT)
-        lines.append(spark)
+    def _chart_lines(self, s, width):
+        """The two spend charts, drawn as real column charts."""
+        if s is None:
+            return [Text("building transcript cache…", style=FAINT)]
+        hide = self._hide_costs
+        # The axis floor should read "$0", not money()'s "<$0.01".
+        money = ((lambda v: "—") if hide
+                 else (lambda v: "$0" if not v else widgets.money(v)))
 
-        days = Text(no_wrap=True, overflow="crop")
-        days.append("Last 14d   ", style=TEXT)
-        days.append_text(widgets.sparkline(s["daily_14d"], PALETTE, color=GREEN))
-        dpeak = max(s["daily_14d"]) if s["daily_14d"] else 0
-        days.append(f"  peak {widgets.money(dpeak, hide)}/day", style=FAINT)
-        lines.append(days)
+        hours = s["hourly_24h"]
+        start = s.get("hourly_start") or (time.time() - 24 * 3600)
+        hour_labels = []
+        for i in range(len(hours)):
+            when = datetime.fromtimestamp(start + i * 3600)
+            hour_labels.append(f"{when.hour:02d}" if i % 3 == 0 else "")
+
+        days = s["daily_14d"]
+        dstart = s.get("daily_start") or (time.time() - 13 * 86400)
+        day_labels = []
+        for i in range(len(days)):
+            when = datetime.fromtimestamp(dstart + i * 86400)
+            day_labels.append(when.strftime("%a")[:2] if i % 2 == 0 else "")
+
+        head = Text(no_wrap=True, overflow="crop")
+        head.append("Cost per hour", style=f"bold {TEXT}")
+        head.append("   last 24h", style=FAINT)
+        busiest = max(hours) if hours else 0
+        head.append(f"   peak {money(busiest)}", style=DIM)
+        head.append(f"   total {money(sum(hours))}", style=DIM)
+        lines = [head]
+        lines += widgets.barchart(hours, 7, width, PALETTE, color=ACCENT,
+                                  value_fmt=money, labels=hour_labels)
+
+        head2 = Text(no_wrap=True, overflow="crop")
+        head2.append("Cost per day", style=f"bold {TEXT}")
+        head2.append("   last 14 days", style=FAINT)
+        dpeak = max(days) if days else 0
+        active = [d for d in days if d > 0]
+        avg = sum(active) / len(active) if active else 0
+        head2.append(f"   peak {money(dpeak)}", style=DIM)
+        head2.append(f"   average working day {money(avg)}", style=DIM)
+        lines.append(Text(""))
+        lines.append(head2)
+        lines += widgets.barchart(days, 7, width, PALETTE, color=GREEN,
+                                  value_fmt=money, labels=day_labels)
         return lines
 
     def _live_lines(self, rows, width):
@@ -1099,9 +1048,9 @@ class SessionDashboard(App):
         return lines
 
     def _render_home(self, rows, u, summary):
-        home = self.query_one("#home", Static)
-        width = max(48, home.content_size.width)
-        height = max(8, home.content_size.height)
+        home = self.query_one("#home-body", Static)
+        width = max(48, home.content_size.width or self.size.width - 4)
+        height = max(8, self.query_one("#home").content_size.height)
         sky, _ = self._sky_for(home)
         inner = width - 4
 
@@ -1116,7 +1065,8 @@ class SessionDashboard(App):
 
         add("⚡ Limits", self._limits_lines(u, inner), ACCENT)
         add("$ Spending", self._spending_lines(summary, inner), GREEN)
-        add("● Live now", self._live_lines(rows, inner), PALETTE["yellow"])
+        add("◷ Spend trend", self._chart_lines(summary, inner), ACCENT)
+        add("● Live now", self._live_lines(rows, inner), YELLOW)
 
         # Whatever is left below the panels is open sky.
         out = Text(no_wrap=True, overflow="crop")
@@ -1200,10 +1150,10 @@ class SessionDashboard(App):
         if not board:
             board = [Text("nothing yet today", style=FAINT)]
 
-        sections = [("▤ Activity", activity, PALETTE["yellow"]),
+        sections = [("▤ Activity", activity, YELLOW),
                     ("◆ Models · 30d", models, ACCENT),
                     ("▣ Projects · 30d", projects, GREEN),
-                    ("⚒ Tools · 30d", tools, PALETTE["yellow"]),
+                    ("⚒ Tools · 30d", tools, YELLOW),
                     ("★ Today's sessions", board, ACCENT)]
 
         out = Text(no_wrap=True, overflow="crop")
@@ -1297,91 +1247,6 @@ class SessionDashboard(App):
     def _truncate(s, n):
         s = " ".join(s.split())
         return s if len(s) <= n else s[: n - 1] + "…"
-
-    def _session_label(self, r, blocked_count):
-        if blocked_count or r["status"] == "blocked":
-            dot, dot_color = "●", RED
-        elif r["status"] == "busy":
-            dot, dot_color = "●", ACCENT
-        else:
-            dot, dot_color = "○", DIM
-
-        t = Text()
-        t.append(f"{dot} ", style=dot_color)
-        t.append(r["name"], style=f"bold {TEXT}")
-        meta = ""
-        if r.get("branch"):
-            meta += f"   {self._truncate(r['branch'], 24)}"
-        meta += f"   pid {r['pid']}"
-        cost = fmt_cost(r.get("cost"))
-        if cost != "-":
-            meta += f"   {cost}"
-        t.append(meta, style=DIM)
-        if blocked_count:
-            t.append(f"   {blocked_count} need input", style=f"bold {RED}")
-        return t
-
-    def _job_label(self, job):
-        state = job["state"]
-        if not job["live"]:
-            dot, dot_color, name_color = "○", FAINT, DIM
-        elif state == "blocked":
-            dot, dot_color, name_color = "●", RED, TEXT
-        elif state == "working":
-            dot, dot_color, name_color = "●", ACCENT, TEXT
-        elif state == "done":
-            dot, dot_color, name_color = "○", FAINT, DIM
-        else:
-            dot, dot_color, name_color = "○", DIM, TEXT
-
-        name = self._truncate(job["name"], 30).ljust(30)
-        pid = (f"pid {job['pid']}" if job["pid"] else "dormant").ljust(11)
-
-        t = Text()
-        t.append(f"{dot} ", style=dot_color)
-        t.append(name, style=name_color)
-        t.append(f"  {pid}", style=FAINT)
-        if state == "blocked" and job["needs"]:
-            t.append(f"  {self._truncate(job['needs'], 44)}", style=FAINT)
-        return t
-
-    def _render_tree(self, interactive_rows, by_parent, detached, hidden_old_done):
-        tree = self.query_one("#tree", Tree)
-        cursor_line = tree.cursor_line
-        tree.clear()
-
-        for r in interactive_rows:
-            children = by_parent.get(r["session_id"], [])
-            blocked_count = sum(1 for j in children if j["state"] == "blocked")
-            if children:
-                key = f"s|{r['session_id']}"
-                node = tree.root.add(self._session_label(r, blocked_count),
-                                     data=r,
-                                     expand=key not in self._tree_collapsed)
-                for j in sorted(children, key=lambda j: j["state"] != "blocked"):
-                    node.add_leaf(self._job_label(j), data=j)
-            else:
-                # No background jobs — render flat, no expand arrow, no filler leaf.
-                tree.root.add_leaf(self._session_label(r, 0), data=r)
-
-        if detached:
-            det_node = tree.root.add(
-                Text("dormant background jobs", style=f"bold {DIM}"),
-                data={"tree_key": "detached"},
-                expand="detached" not in self._tree_collapsed,
-            )
-            for j in sorted(detached, key=lambda j: j["state"] != "blocked"):
-                det_node.add_leaf(self._job_label(j))
-
-        if hidden_old_done:
-            plural = "s" if hidden_old_done != 1 else ""
-            tree.root.add_leaf(
-                Text(f"+{hidden_old_done} completed job{plural} hidden "
-                     f"(older than {DONE_JOB_MAX_AGE_HOURS}h)", style=FAINT)
-            )
-
-        # clear() reset the cursor; put it back or the tick eats every keypress.
-        tree.cursor_line = cursor_line
 
     def action_manual_refresh(self):
         self.refresh_sessions()

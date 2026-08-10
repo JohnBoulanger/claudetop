@@ -432,7 +432,9 @@ def summarize(files, now=None, five_hour_start=None):
         "by_tool_30d": tools,
         "sessions_today": leaderboard,
         "hourly_24h": hourly,
+        "hourly_start": hour0,   # epoch of the first hourly bucket
         "daily_14d": daily,
+        "daily_start": day0,     # local midnight of the first daily bucket
         "burn": burn,
         "transcripts": len(files),
     }

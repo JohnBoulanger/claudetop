@@ -79,17 +79,4 @@ def next_preset(current):
 
 def save_preset(name):
     """Persist a preset choice without disturbing the rest of the config."""
-    import json
-    path = paths.ensure(paths.config_dir()) / paths.CONFIG_FILE
-    try:
-        cfg = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(cfg, dict):
-            cfg = {}
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        cfg = {}
-    theme = cfg.get("theme")
-    cfg["theme"] = {**(theme if isinstance(theme, dict) else {}), "preset": name}
-    try:
-        path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    paths.update_config(theme={"preset": name})

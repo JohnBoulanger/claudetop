@@ -93,6 +93,30 @@ def load_config() -> dict:
     return cfg
 
 
+def update_config(**changes) -> Path:
+    """Merge changes into the config file, leaving everything else alone.
+
+    A key whose value is a dict is merged one level deep, so writing a single
+    theme color does not wipe the rest of the theme block."""
+    path = ensure(config_dir()) / CONFIG_FILE
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        cfg = {}
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(cfg.get(key), dict):
+            cfg[key].update(value)
+        else:
+            cfg[key] = value
+    try:
+        path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return path
+
+
 def write_default_config() -> Path:
     """Create config.json with the defaults if it does not exist yet."""
     path = ensure(config_dir()) / CONFIG_FILE
