@@ -156,112 +156,18 @@ def sky_row(y, width, sky, palette, prefix=None):
     return t
 
 
-BRAILLE_BASE = 0x2800
-# Dot bit for (column-in-cell, row-in-cell). Braille numbers its dots in a
-# famously odd order; this table is the whole of that oddity.
-BRAILLE_BIT = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
-               (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80}
-
-
-def braille_chart(values, height, width, palette, color=None, gutter=10,
-                  value_fmt=None, labels=None, average=True, grid=True):
-    """A line chart at braille resolution: 2 dots wide, 4 tall, per cell.
-
-    A six-row chart is therefore 24 vertical steps rather than 6, and a full
-    width panel plots a couple of hundred points instead of one per column —
-    which is what makes 15-minute buckets legible.
-
-    Draws, in order: a dim gridline at each labelled level, an average line,
-    then the series. Returns the chart rows plus an x-label row.
-    """
-    rows = []
-    if not values or height < 2 or width < 20:
-        return rows
-
-    top = max(values) or 1.0
-    fmt = value_fmt or (lambda v: f"{v:g}")
-    gutter = max(gutter, len(fmt(top)) + 2)
-    cols = max(8, width - gutter)
-    dot_w, dot_h = cols * 2, height * 4
-    color = color or palette["accent"]
-
-    cells = {}                      # (row, col) -> bitmask
-
-    def plot(dx, dy):
-        if 0 <= dx < dot_w and 0 <= dy < dot_h:
-            key = (dy // 4, dx // 2)
-            cells[key] = cells.get(key, 0) | BRAILLE_BIT[(dx % 2, dy % 4)]
-
-    def dot_y(v):
-        return int(round((1.0 - min(1.0, max(0.0, v / top))) * (dot_h - 1)))
-
-    # Spread the series across the full dot width and join the points, so a
-    # gap between samples reads as a slope rather than two islands.
-    n = len(values)
-    last = None
-    for dx in range(dot_w):
-        idx = int(dx * n / dot_w)
-        y = dot_y(values[min(n - 1, idx)])
-        if last is not None and abs(y - last) > 1:
-            step = 1 if y > last else -1
-            for fill in range(last + step, y, step):
-                plot(dx, fill)
-        plot(dx, y)
-        last = y
-
-    active = [v for v in values if v > 0]
-    mean_row = None
-    if average and active:
-        mean_row = dot_y(sum(active) / len(active)) // 4
-
-    label_rows = {0: fmt(top), height - 1: fmt(0)}
-    if height >= 5:
-        label_rows[height // 2] = fmt(top / 2)
-
-    for row in range(height):
-        line = Text(no_wrap=True, overflow="crop")
-        tag = label_rows.get(row, "")
-        style = palette["dim"] if row == 0 else palette["faint"]
-        line.append(f"{tag:>{gutter - 1}} ", style=style)
-        for col in range(cols):
-            bits = cells.get((row, col))
-            if bits:
-                line.append(chr(BRAILLE_BASE + bits), style=color)
-            elif row == mean_row:
-                # Dashed, not solid: the average is a reference, not data.
-                line.append("╌" if col % 2 == 0 else " ", style=palette["faint"])
-            elif grid and row in label_rows:
-                line.append("·" if col % 3 == 0 else " ", style=palette["faint"])
-            else:
-                line.append(" ")
-        rows.append(line)
-
-    if labels:
-        row = Text(no_wrap=True, overflow="crop")
-        row.append(" " * gutter)
-        used = 0
-        per = cols / max(1, len(labels))
-        for i, lab in enumerate(labels):
-            if not lab:
-                continue
-            start = int(i * per)
-            if start < used:
-                continue
-            row.append(" " * (start - used))
-            row.append(str(lab), style=palette["faint"])
-            used = start + len(str(lab))
-        rows.append(row)
-    return rows
-
-
 def linechart(values, height, width, palette, color=None, gutter=9,
-              value_fmt=None, labels=None):
-    """A compact line chart, drawn with box-drawing glyphs.
+              value_fmt=None, labels=None, average=True, grid=True):
+    """A continuous line chart, drawn with box-drawing glyphs.
 
     Each point is widened to fill the plot area, then consecutive points are
     joined: a flat run is ─, a rise or fall gets corner glyphs at both ends
-    with │ down the middle. The left gutter carries the top and bottom value
-    labels; `labels` (one per value, blanks allowed) prints underneath.
+    with │ down the middle, so the series reads as one unbroken stroke rather
+    than a scatter of marks.
+
+    The gutter carries value labels at the top, the midpoint and zero, each
+    with a sparse dotted gridline; the mean of the non-idle points is drawn as
+    a dashed rule. `labels` (one per value, blanks allowed) prints underneath.
 
     Returns `height` chart rows plus a label row when labels are given.
     """
@@ -269,64 +175,72 @@ def linechart(values, height, width, palette, color=None, gutter=9,
     if not values or height < 2:
         return rows
     top = max(values) or 1.0
-    top_tag = value_fmt(top) if value_fmt else f"{top:g}"
-    zero_tag = value_fmt(0) if value_fmt else "0"
+    fmt = value_fmt or (lambda v: f"{v:g}")
+    top_tag, zero_tag = fmt(top), fmt(0)
     # The gutter has to fit its own labels, or a four-figure total pushes the
     # plot past the panel edge.
     gutter = max(gutter, len(top_tag) + 1, len(zero_tag) + 1)
-    plot_w = max(len(values), width - gutter)
-    per = max(1, plot_w // len(values))
-    cols = per * len(values)
+    n = len(values)
+    cols = max(n, width - gutter)
     color = color or palette["accent"]
 
-    # Widen each point across its share of the columns, so the line reads as
-    # a shape rather than a spike per cell.
-    series = [values[min(len(values) - 1, i // per)] for i in range(cols)]
+    # Stretch the series across the whole plot area rather than giving each
+    # point a whole column: 56 points in 100 columns should fill the panel,
+    # not stop halfway.
+    series = [values[min(n - 1, int(i * n / cols))] for i in range(cols)]
 
     def row_of(v):
         # row 0 is the top of the chart
         return height - 1 - int(round(v / top * (height - 1)))
 
-    grid = [[None] * cols for _ in range(height)]
+    canvas = [[None] * cols for _ in range(height)]
     for x in range(cols):
         y0 = row_of(series[x])
         y1 = row_of(series[x + 1]) if x + 1 < cols else y0
         if y0 == y1:
-            grid[y0][x] = "─"
+            canvas[y0][x] = "─"
         elif y1 < y0:                      # rising
-            grid[y1][x] = "╭"
-            grid[y0][x] = "╯"
+            canvas[y1][x] = "╭"
+            canvas[y0][x] = "╯"
             for y in range(y1 + 1, y0):
-                grid[y][x] = "│"
+                canvas[y][x] = "│"
         else:                              # falling
-            grid[y0][x] = "╮"
-            grid[y1][x] = "╰"
+            canvas[y0][x] = "╮"
+            canvas[y1][x] = "╰"
             for y in range(y0 + 1, y1):
-                grid[y][x] = "│"
+                canvas[y][x] = "│"
+
+    label_rows = {0: top_tag, height - 1: zero_tag}
+    if height >= 5:
+        label_rows[height // 2] = fmt(top / 2)
+
+    live = [v for v in values if v > 0]
+    mean_row = row_of(sum(live) / len(live)) if (average and live) else None
+
+    def backdrop(y, x):
+        """What sits behind the line at this cell."""
+        if y == mean_row:
+            return ("╌", palette["faint"]) if x % 2 == 0 else (" ", None)
+        if grid and y in label_rows:
+            return ("·", palette["faint"]) if x % 3 == 0 else (" ", None)
+        return (" ", None)
 
     for y in range(height):
         line = Text(no_wrap=True, overflow="crop")
-        if y == 0:
-            line.append(f"{top_tag:>{gutter - 1}} ", style=palette["dim"])
-        elif y == height - 1:
-            line.append(f"{zero_tag:>{gutter - 1}} ", style=palette["faint"])
-        else:
-            line.append(" " * gutter)
+        tag = label_rows.get(y, "")
+        line.append(f"{tag:>{gutter - 1}} ",
+                    style=palette["dim"] if y == 0 else palette["faint"])
         x = 0
         while x < cols:
-            if grid[y][x] is None:
-                run = 0
-                while x + run < cols and grid[y][x + run] is None:
-                    run += 1
-                # A blank cell on the floor row is still the baseline.
-                line.append(("·" if y == height - 1 else " ") * run,
-                            style=palette["faint"])
-                x += run
+            if canvas[y][x] is None:
+                glyph, style = backdrop(y, x)
+                line.append(glyph, style=style)
+                x += 1
                 continue
             run = 0
-            while x + run < cols and grid[y][x + run] == grid[y][x]:
+            while x + run < cols and canvas[y][x + run] == canvas[y][x]:
                 run += 1
-            line.append(grid[y][x] * run, style=color)
+            line.append(canvas[y][x] * run, style=color)
             x += run
         rows.append(line)
 
@@ -337,13 +251,14 @@ def linechart(values, height, width, palette, color=None, gutter=9,
         for i, lab in enumerate(labels):
             if not lab:
                 continue
-            start = i * per
+            # Position by fraction, and print the label whole — a tick that
+            # reads "Jul" instead of "Jul 28" is worse than a sparser axis.
+            start = int(i * cols / len(labels))
             if start < used:
                 continue
-            text = str(lab)[:per * 3]
             row.append(" " * (start - used))
-            row.append(text, style=palette["faint"])
-            used = start + len(text)
+            row.append(str(lab), style=palette["faint"])
+            used = start + len(str(lab))
         rows.append(row)
     return rows
 

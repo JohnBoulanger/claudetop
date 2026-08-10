@@ -320,11 +320,8 @@ def summarize(files, now=None, five_hour_start=None):
     hour0 = now - 24 * 3600
     day0 = local_midnight - 13 * 86400
 
-    # Finer series for the charts. Braille plots two points per column, so a
-    # wide panel can show far more than one point per hour; these are the
-    # same windows at higher resolution.
-    fine_hour_step = 900                      # 15 minutes
-    fine_hourly = [0.0] * (24 * 3600 // fine_hour_step)
+    # The 14-day chart is plotted finer than one point per day, so a busy
+    # afternoon does not vanish into a daily total.
     fine_day_step = 6 * 3600                  # 6 hours
     fine_daily = [0.0] * (14 * 86400 // fine_day_step)
 
@@ -357,8 +354,6 @@ def summarize(files, now=None, five_hour_start=None):
             c = pricing.cost(model, tin, tout, tcr, tcw)
             if ts >= hour0:
                 hourly[min(23, int((ts - hour0) // 3600))] += c
-                fine_hourly[min(len(fine_hourly) - 1,
-                                int((ts - hour0) // fine_hour_step))] += c
             if ts >= day0:
                 daily[min(13, int((ts - day0) // 86400))] += c
                 fine_daily[min(len(fine_daily) - 1,
@@ -463,8 +458,6 @@ def summarize(files, now=None, five_hour_start=None):
         "hourly_start": hour0,   # epoch of the first hourly bucket
         "daily_14d": daily,
         "daily_start": day0,     # local midnight of the first daily bucket
-        "fine_hourly": fine_hourly,          # 15-minute buckets over 24h
-        "fine_hourly_step": fine_hour_step,
         "fine_daily": fine_daily,            # 6-hour buckets over 14 days
         "fine_daily_step": fine_day_step,
         "monthly": sorted(monthly.items()),   # [("2026-08", cost), ...]
