@@ -42,9 +42,9 @@ decoration — it is a second, ambient read on the same data:
 
 | What you see | What it means |
 |--------------|---------------|
-| Stars drifting | Live burn rate. An idle machine has a still field; several busy sessions pull it into visible motion. |
+| Stars drifting, and more of them | Live burn rate and how many sessions are working. An idle machine has a still, sparse field; flat out the sky is about 2.6x as dense and scrolls visibly. |
 | A meteor | An event just happened — green for a background job finishing, red for a session that needs your input, terracotta for a new prompt. |
-| The comet | Your 5h limit window. It crosses the sky once per window, so its position is your time to reset. |
+| The comet | Your 5h limit window — a clock, not an event. It crosses the sky once per window, so its position is your time to reset. |
 | The tide along the bottom | 5h utilization. It rises as you spend and turns red past 90%. |
 
 Textual cannot show a lower layer through an upper widget's cells, so the

@@ -26,7 +26,8 @@ import time
 
 GLYPHS = ["·", "·", "·", ".", "✦", "✧", "+"]
 SPARKLE = "✻"
-DENSITY = 48           # roughly one star per N cells
+DENSITY = 48           # idle: roughly one star per N cells
+BUSY_DENSITY_MULT = 2.6  # flat out: this many times as many stars
 FPS = 8
 
 METEOR_GLYPHS = {(1, 1): "╲", (-1, 1): "╱", (1, -1): "╱", (-1, -1): "╲"}
@@ -66,6 +67,7 @@ class StarModel:
         self.p = palette
         self.w = self.h = 0
         self.stars = []
+        self.base_count = 0
         self.meteors = []
         self.warp = 0.0          # 0 = still, 1 = busy
         self.limit_pct = None    # 5h utilization
@@ -83,8 +85,12 @@ class StarModel:
     def _rebuild(self):
         if not self.w or not self.h:
             self.stars = []
+            self.base_count = 0
             return
-        count = max(1, (self.w * self.h) // DENSITY)
+        # Build the busy-sky pool once and reveal more of it as warp rises.
+        # Rebuilding on every change of pace would teleport every star.
+        self.base_count = max(1, (self.w * self.h) // DENSITY)
+        count = int(self.base_count * BUSY_DENSITY_MULT)
         self.stars = []
         for _ in range(count):
             special = random.random() < 0.14  # ~1 in 7 is a ✻ sparkle
@@ -144,10 +150,16 @@ class StarModel:
 
     # -------------------------------------------------------------- render
 
+    def visible_count(self):
+        """How much of the star pool is on show: the whole thing at full warp,
+        the base field when the machine is idle."""
+        extra = len(self.stars) - self.base_count
+        return self.base_count + int(extra * self.warp)
+
     def _star_cells(self):
         """{(x, y): (glyph, brightness, special)} for this frame."""
         cells = {}
-        for s in self.stars:
+        for s in self.stars[:self.visible_count()]:
             b = (math.sin(s["phase"]) + 1.0) * 0.5 * s["amp"]
             if b < 0.30:  # most stars are dark most of the time
                 continue
@@ -168,21 +180,25 @@ class StarModel:
         return self.p["faint"]
 
     def frame(self, dim=False):
-        """{(x, y): (glyph, color)} — everything in the sky this frame."""
+        """{(x, y): (glyph, color)} — everything in the sky this frame.
+
+        dim only dims the *stars*. The comet, the tide and the meteors are
+        signals rather than texture, and the panels cover most of the screen —
+        if they were dropped here they would never be seen at all.
+        """
         out = {}
         for (x, y), (glyph, b, special) in self._star_cells().items():
             out[(x, y)] = (glyph, self._brightness_color(b, special, dim))
 
-        if not dim:
-            for (x, y, glyph, fade) in self._tide_cells():
-                out[(x, y)] = (glyph, fade)
-            for (x, y, glyph, fade) in self._comet_cells():
-                out[(x, y)] = (glyph, fade)
-            for m in self.meteors:
-                for (x, y, glyph, fade) in m.cells():
-                    if 0 <= x < self.w and 0 <= y < self.h and fade > 0.2:
-                        out[(x, y)] = (glyph, m.color if fade > 0.6
-                                       else self.p["faint"])
+        for (x, y, glyph, color) in self._tide_cells():
+            out[(x, y)] = (glyph, color)
+        for (x, y, glyph, color) in self._comet_cells():
+            out[(x, y)] = (glyph, color)
+        for m in self.meteors:
+            for (x, y, glyph, fade) in m.cells():
+                if 0 <= x < self.w and 0 <= y < self.h and fade > 0.2:
+                    out[(x, y)] = (glyph, m.color if fade > 0.6
+                                   else self.p["faint"])
         return out
 
     def _comet_cells(self):
