@@ -35,7 +35,7 @@ from . import paths
 from . import pricing
 
 PROJECTS_DIR = paths.CLAUDE_HOME / "projects"
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 CACHE_NAME = "transcripts.json"
 
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
@@ -71,6 +71,9 @@ def _blank_entry(path: Path):
         "first_ts": None, "last_ts": None,
         "totals": {"msgs": 0, "tools": 0, "prompts": 0,
                    "in": 0, "out": 0, "cr": 0, "cw": 0, "by_model": {}},
+        # Per-month token sums, kept forever: events are pruned after a month,
+        # so this is the only way to chart spend over a longer horizon.
+        "months": {},    # "2026-08" -> {model: [in, out, cr, cw]}
         "events": [],    # [ts, model, in, out, cr, cw, tools, files]
         "prompts": [],   # [ts, ...]
         "files": [],     # [[ts, path], ...]
@@ -195,6 +198,13 @@ def _consume(entry, chunk):
         if ts:
             entry["events"].append([round(ts, 1), model, tin, tout, tcr, tcw,
                                     tools, len(touched)])
+            month = entry["months"].setdefault(
+                time.strftime("%Y-%m", time.localtime(ts)), {})
+            acc = month.setdefault(model, [0, 0, 0, 0])
+            acc[0] += tin
+            acc[1] += tout
+            acc[2] += tcr
+            acc[3] += tcw
 
     entry["ids"] = order[-ID_MEMORY:]
     return entry
@@ -305,6 +315,7 @@ def summarize(files, now=None, five_hour_start=None):
     per_session_today = {}   # today's cost per transcript, for the leaderboard
     hourly = [0.0] * 24      # last 24 hours, oldest first
     daily = [0.0] * 14       # last 14 local days, oldest first
+    monthly = {}             # "2026-08" -> cost, every month on record
     recent_hour = 0.0        # cost in the last 60 minutes -> burn rate
     hour0 = now - 24 * 3600
     day0 = local_midnight - 13 * 86400
@@ -327,6 +338,11 @@ def summarize(files, now=None, five_hour_start=None):
                                         m.get("cr", 0), m.get("cw", 0))
             allw["cost"] += pricing.cost(model, m.get("in", 0), m.get("out", 0),
                                          m.get("cr", 0), m.get("cw", 0))
+
+        for ym, models in (entry.get("months") or {}).items():
+            for model, (tin, tout, tcr, tcw) in models.items():
+                monthly[ym] = monthly.get(ym, 0.0) + pricing.cost(
+                    model, tin, tout, tcr, tcw)
 
         proj = project_name(entry)
         for ts, model, tin, tout, tcr, tcw, tools, nfiles in entry.get("events", []):
@@ -435,6 +451,7 @@ def summarize(files, now=None, five_hour_start=None):
         "hourly_start": hour0,   # epoch of the first hourly bucket
         "daily_14d": daily,
         "daily_start": day0,     # local midnight of the first daily bucket
+        "monthly": sorted(monthly.items()),   # [("2026-08", cost), ...]
         "burn": burn,
         "transcripts": len(files),
     }

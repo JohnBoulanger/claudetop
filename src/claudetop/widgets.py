@@ -154,60 +154,81 @@ def sky_row(y, width, sky, palette, prefix=None):
     return t
 
 
-EIGHTHS = " ▁▂▃▄▅▆▇█"
+def linechart(values, height, width, palette, color=None, gutter=9,
+              value_fmt=None, labels=None):
+    """A compact line chart, drawn with box-drawing glyphs.
 
+    Each point is widened to fill the plot area, then consecutive points are
+    joined: a flat run is ─, a rise or fall gets corner glyphs at both ends
+    with │ down the middle. The left gutter carries the top and bottom value
+    labels; `labels` (one per value, blanks allowed) prints underneath.
 
-def barchart(values, height, width, palette, color=None, gutter=8,
-             value_fmt=None, labels=None, highlight_last=True):
-    """A column chart `height` rows tall, drawn with vertical eighth blocks.
-
-    Each value gets an equal share of the width, so 24 hourly values across a
-    wide panel become fat, readable bars rather than a one-cell sparkline. The
-    left gutter carries the top and mid value labels; `labels` (one string per
-    value, blanks allowed) is printed underneath.
-
-    Returns a list of Text rows: `height` chart rows, then an axis row, then a
-    label row when labels are given.
+    Returns `height` chart rows plus a label row when labels are given.
     """
     rows = []
     if not values or height < 2:
         return rows
     top = max(values) or 1.0
-    plot_w = max(8, width - gutter)
+    top_tag = value_fmt(top) if value_fmt else f"{top:g}"
+    zero_tag = value_fmt(0) if value_fmt else "0"
+    # The gutter has to fit its own labels, or a four-figure total pushes the
+    # plot past the panel edge.
+    gutter = max(gutter, len(top_tag) + 1, len(zero_tag) + 1)
+    plot_w = max(len(values), width - gutter)
     per = max(1, plot_w // len(values))
+    cols = per * len(values)
     color = color or palette["accent"]
 
-    # Height in eighths, so a bar can end part way up a cell.
-    eighths = [min(height * 8, int(round(v / top * height * 8))) for v in values]
+    # Widen each point across its share of the columns, so the line reads as
+    # a shape rather than a spike per cell.
+    series = [values[min(len(values) - 1, i // per)] for i in range(cols)]
 
-    for row in range(height):
+    def row_of(v):
         # row 0 is the top of the chart
-        floor_ = (height - row - 1) * 8
+        return height - 1 - int(round(v / top * (height - 1)))
+
+    grid = [[None] * cols for _ in range(height)]
+    for x in range(cols):
+        y0 = row_of(series[x])
+        y1 = row_of(series[x + 1]) if x + 1 < cols else y0
+        if y0 == y1:
+            grid[y0][x] = "─"
+        elif y1 < y0:                      # rising
+            grid[y1][x] = "╭"
+            grid[y0][x] = "╯"
+            for y in range(y1 + 1, y0):
+                grid[y][x] = "│"
+        else:                              # falling
+            grid[y0][x] = "╮"
+            grid[y1][x] = "╰"
+            for y in range(y0 + 1, y1):
+                grid[y][x] = "│"
+
+    for y in range(height):
         line = Text(no_wrap=True, overflow="crop")
-        if row == 0:
-            tag = (value_fmt(top) if value_fmt else f"{top:g}")
-            line.append(f"{tag:>{gutter - 1}} ", style=palette["dim"])
-        elif row == height - 1:
-            tag = (value_fmt(0) if value_fmt else "0")
-            line.append(f"{tag:>{gutter - 1}} ", style=palette["faint"])
+        if y == 0:
+            line.append(f"{top_tag:>{gutter - 1}} ", style=palette["dim"])
+        elif y == height - 1:
+            line.append(f"{zero_tag:>{gutter - 1}} ", style=palette["faint"])
         else:
             line.append(" " * gutter)
-        for i, filled in enumerate(eighths):
-            part = max(0, min(8, filled - floor_))
-            glyph = EIGHTHS[part]
-            style = color
-            if highlight_last and i == len(eighths) - 1:
-                style = f"bold {color}"
-            if part == 0:
-                line.append(" " * per)
-            else:
-                line.append(glyph * per, style=style)
+        x = 0
+        while x < cols:
+            if grid[y][x] is None:
+                run = 0
+                while x + run < cols and grid[y][x + run] is None:
+                    run += 1
+                # A blank cell on the floor row is still the baseline.
+                line.append(("·" if y == height - 1 else " ") * run,
+                            style=palette["faint"])
+                x += run
+                continue
+            run = 0
+            while x + run < cols and grid[y][x + run] == grid[y][x]:
+                run += 1
+            line.append(grid[y][x] * run, style=color)
+            x += run
         rows.append(line)
-
-    axis = Text(no_wrap=True, overflow="crop")
-    axis.append(" " * gutter)
-    axis.append("─" * (per * len(values)), style=palette["border"])
-    rows.append(axis)
 
     if labels:
         row = Text(no_wrap=True, overflow="crop")
@@ -219,9 +240,10 @@ def barchart(values, height, width, palette, color=None, gutter=8,
             start = i * per
             if start < used:
                 continue
+            text = str(lab)[:per * 3]
             row.append(" " * (start - used))
-            row.append(str(lab)[:per * 2], style=palette["faint"])
-            used = start + len(str(lab)[:per * 2])
+            row.append(text, style=palette["faint"])
+            used = start + len(text)
         rows.append(row)
     return rows
 

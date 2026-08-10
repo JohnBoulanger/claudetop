@@ -992,28 +992,36 @@ class SessionDashboard(App):
             when = datetime.fromtimestamp(dstart + i * 86400)
             day_labels.append(when.strftime("%a")[:2] if i % 2 == 0 else "")
 
-        head = Text(no_wrap=True, overflow="crop")
-        head.append("Cost per hour", style=f"bold {TEXT}")
-        head.append("   last 24h", style=FAINT)
-        busiest = max(hours) if hours else 0
-        head.append(f"   peak {money(busiest)}", style=DIM)
-        head.append(f"   total {money(sum(hours))}", style=DIM)
-        lines = [head]
-        lines += widgets.barchart(hours, 7, width, PALETTE, color=ACCENT,
-                                  value_fmt=money, labels=hour_labels)
+        months = s.get("monthly") or []
+        month_labels = [datetime.strptime(ym, "%Y-%m").strftime("%b")
+                        for ym, _ in months]
+        month_values = [c for _, c in months]
 
-        head2 = Text(no_wrap=True, overflow="crop")
-        head2.append("Cost per day", style=f"bold {TEXT}")
-        head2.append("   last 14 days", style=FAINT)
-        dpeak = max(days) if days else 0
-        active = [d for d in days if d > 0]
-        avg = sum(active) / len(active) if active else 0
-        head2.append(f"   peak {money(dpeak)}", style=DIM)
-        head2.append(f"   average working day {money(avg)}", style=DIM)
-        lines.append(Text(""))
-        lines.append(head2)
-        lines += widgets.barchart(days, 7, width, PALETTE, color=GREEN,
-                                  value_fmt=money, labels=day_labels)
+        def head(title, note, *facts):
+            t = Text(no_wrap=True, overflow="crop")
+            t.append(title, style=f"bold {TEXT}")
+            t.append(f"   {note}", style=FAINT)
+            for f in facts:
+                t.append(f"   {f}", style=DIM)
+            return t
+
+        active_days = [d for d in days if d > 0]
+        lines = [head("Per hour", "last 24h", f"peak {money(max(hours or [0]))}",
+                      f"total {money(sum(hours))}")]
+        lines += widgets.linechart(hours, 4, width, PALETTE, color=ACCENT,
+                                   value_fmt=money, labels=hour_labels)
+        lines.append(head("Per day", "last 14 days",
+                          f"peak {money(max(days or [0]))}",
+                          f"working day avg {money(sum(active_days) / len(active_days)) if active_days else money(0)}"))
+        lines += widgets.linechart(days, 4, width, PALETTE, color=GREEN,
+                                   value_fmt=money, labels=day_labels)
+        if month_values:
+            lines.append(head("Per month", f"{len(months)} months on record",
+                              f"peak {money(max(month_values))}",
+                              f"this month {money(month_values[-1])}"))
+            lines += widgets.linechart(month_values, 4, width, PALETTE,
+                                       color=YELLOW, value_fmt=money,
+                                       labels=month_labels)
         return lines
 
     def _live_lines(self, rows, width):
