@@ -30,7 +30,6 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 | `h` | — | Hide every dollar figure, for screen sharing. |
 | `r` | — | Force a refresh. |
 | `ctrl+s` | Settings | Theme, hide-costs, usage polling and cache retention, written straight to the config file. |
-| `ctrl+r` | — | Restart claudetop in place, so a theme or polling change takes effect. |
 | `q` | — | Quit. |
 
 A compact 5h / 7d gauge strip sits under the title in every view, so you never
@@ -130,8 +129,7 @@ Presets: `black` (default, terracotta on true black), `warm`, `midnight`,
 `panel`, `text`, `dim`, `faint`, `accent`, `red`, `green`, `yellow`, `border`,
 `star`. Set `hide_costs` to blank out every dollar figure for screen sharing.
 Colors are compiled into the Textual stylesheet at startup, so a theme change
-lands on the next launch; the settings screen marks those options with a `*`,
-and `ctrl+r` restarts in place so you do not have to quit and retype anything.
+lands on the next launch; the settings screen marks those options with a `*`.
 Older configs naming `espresso` or `espresso-warm` still load — they are the
 same palettes as `black` and `warm`.
 
