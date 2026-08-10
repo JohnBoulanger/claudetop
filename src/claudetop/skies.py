@@ -87,6 +87,9 @@ class Sky:
         self.meteors = []
         self.model_tint = model_tint
         self.set_motion(motion)
+        # Build the pack's own state now, not on first resize: a panel can
+        # ask for a frame before the sky has ever been given a size.
+        self.rebuild()
         self._last = time.time()
 
     # ------------------------------------------------------------- inputs
@@ -105,7 +108,8 @@ class Sky:
         self.rebuild()
 
     def rebuild(self):
-        pass
+        """Create or reset whatever particles the pack keeps. Must be safe to
+        call with no size yet."""
 
     def set_activity(self, busy_sessions=0, burn_per_hour=0.0):
         by_count = min(1.0, busy_sessions / 4.0)
