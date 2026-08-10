@@ -31,7 +31,7 @@ from textual.widgets import DataTable, Footer, Static
 
 from . import paths
 from . import pricing
-from . import starfield
+from . import skies
 from . import stats
 from . import theme
 from . import usage
@@ -58,6 +58,19 @@ BUSY_VERBS = [
     "Marinating", "Simmering", "Puzzling", "Deliberating", "Synthesizing",
 ]
 STATUS_RANK = {"blocked": 0, "busy": 1, "running": 2, "idle": 3}
+
+# Which panels the home view stacks, and in what order. "panels" in the
+# config overrides the preset outright.
+LAYOUTS = {
+    "full":    ["limits", "spend", "trend", "live"],
+    "compact": ["limits", "spend", "live"],
+    "minimal": ["limits", "live"],
+    "charts":  ["limits", "trend"],
+}
+DEFAULT_LAYOUT = "full"
+
+# How many rows a panel is allowed in each layout; compact ones show less.
+COMPACT_LAYOUTS = {"compact", "minimal"}
 
 # Blank rows between stacked panels. One is enough to stop the borders reading
 # as a single table; the gap is filled with sky, not whitespace.
@@ -99,8 +112,14 @@ Screen {{
 }}
 
 #banner, #subtitle, #limit-strip, #home, #analytics, #map,
-#table, Footer {{
+#table, #saver, Footer {{
     layer: content;
+}}
+
+#saver {{
+    background: {BG};
+    color: {TEXT};
+    height: 1fr;
 }}
 
 #banner {{
@@ -157,12 +176,12 @@ DataTable > .datatable--cursor {{
     color: {TEXT};
 }}
 
-SettingsScreen {{
+CustomizeScreen {{
     align: center middle;
 }}
 
-#settings {{
-    width: 66;
+#customize {{
+    width: 92;
     height: auto;
     padding: 1 2;
     background: {PANEL};
@@ -434,28 +453,34 @@ def fmt_cost(c):
     return f"${c:.2f}"
 
 
-SKY = starfield.StarModel(PALETTE)
+SKY = skies.build(CONFIG.get("sky") or skies.DEFAULT_PACK, PALETTE,
+                  motion=CONFIG.get("motion") or skies.DEFAULT_MOTION,
+                  model_tint=bool(CONFIG.get("model_tint", True)))
 
 
 class StarField(Static):
     """The sky, on the bottom layer, filling the whole screen.
 
     It owns the animation clock: it is the only thing that calls SKY.tick(),
-    so the panels that paint their own dimmed stars stay in step with it
-    instead of running the simulation twice as fast.
+    so the panels that paint their own dimmed copy stay in step with it
+    instead of running the simulation twice as fast. At motion "off" it
+    paints one static frame and never ticks again.
     """
 
-    FPS = starfield.FPS
-
     def on_mount(self):
-        self.set_interval(1 / self.FPS, self._tick)
+        self._paint()
+        if SKY.fps:
+            self.set_interval(1 / SKY.fps, self._tick)
 
     def _tick(self):
+        SKY.tick()
+        self._paint()
+
+    def _paint(self):
         w, h = max(0, self.size.width), max(0, self.size.height)
         if not w or not h:
             return
         SKY.resize(w, h)
-        SKY.tick()
         cells = SKY.frame()
         # The sky is sparse, so emit runs of blank cells in one append rather
         # than one per character — a full-screen frame is a few hundred
@@ -480,46 +505,91 @@ class StarField(Static):
         self.update(t)
 
 
-class SettingsScreen(ModalScreen):
-    """ctrl+s — every setting the config file holds, editable in place.
+class CustomizeScreen(ModalScreen):
+    """ctrl+p — everything you can change, with a live preview beside it.
 
-    Each change is written straight to config.json. Some land immediately;
-    the ones that configure a background thread or the Textual stylesheet are
-    marked, because they only take effect on the next launch.
+    Options are grouped the way you think about them (Look, Motion, Layout,
+    Data) rather than the way the config file is ordered, every change is
+    written to disk immediately, and the preview panel to the right shows the
+    sky pack, gauge style and panel order you are choosing before you commit
+    to them. Options that only take effect on the next launch are marked.
     """
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
-        Binding("ctrl+s", "close", "Close", show=False),
+        Binding("ctrl+p", "close", "Close", show=False),
         Binding("q", "close", "Close", show=False),
         Binding("up,k", "prev", "Up", show=False),
         Binding("down,j", "next", "Down", show=False),
         Binding("left,h", "back", "Previous value", show=False),
         Binding("right,l,enter,space", "forward", "Next value", show=False),
+        Binding("r", "reset", "Reset this option", show=False),
     ]
 
-    # key, label, values, formatter, takes effect now?
+    # (section, key, label, values, formatter, applies immediately, blurb)
     OPTIONS = [
-        ("theme", "Theme", theme.preset_names(), str, False),
-        ("hide_costs", "Hide costs", [False, True],
-         lambda v: "yes" if v else "no", True),
-        ("usage_api", "Usage API", [True, False],
-         lambda v: "on" if v else "off", False),
-        ("usage_poll_seconds", "Limit poll", [30, 60, 120, 300],
-         lambda v: f"every {v}s", False),
-        ("stats_retention_days", "Keep detail", [7, 14, 31, 60, 90],
-         lambda v: f"{v} days", False),
+        ("Look", "theme", "Theme", None, str, False,
+         "colour palette for everything"),
+        ("Look", "sky", "Background", None, str, False,
+         "the animated layer behind every view"),
+        ("Look", "model_tint", "Tint by model", [True, False],
+         lambda v: "on" if v else "off", False,
+         "colour the background by the model burning most"),
+        ("Look", "gauges", "Gauge style", ["bar", "blocks", "dial", "trend"],
+         str, True, "how the 5h and 7d meters are drawn"),
+        ("Look", "session_colors", "Session colours",
+         ["hash", "status", "off"], str, True,
+         "hash gives each session its own stable colour"),
+        ("Motion", "motion", "Motion", None, str, False,
+         "animation budget — turn down over SSH"),
+        ("Motion", "idle_screensaver_minutes", "Screensaver",
+         [0, 2, 5, 10, 30], lambda v: "off" if not v else f"after {v}m", True,
+         "full-screen sky and clock once you stop typing"),
+        ("Layout", "layout", "Home layout",
+         ["full", "compact", "minimal", "charts"], str, True,
+         "which panels the home page stacks"),
+        ("Layout", "weather", "Forecast line", [True, False],
+         lambda v: "on" if v else "off", True,
+         "plain-language read on the 5h window"),
+        ("Layout", "session_sparklines", "Session traces", [True, False],
+         lambda v: "on" if v else "off", False,
+         "24h cost trace in the sessions view"),
+        ("Layout", "hide_costs", "Hide costs", [False, True],
+         lambda v: "yes" if v else "no", True,
+         "blank every dollar figure, for screen sharing"),
+        ("Data", "usage_api", "Usage API", [True, False],
+         lambda v: "on" if v else "off", False,
+         "poll Anthropic for the 5h and 7d limits"),
+        ("Data", "usage_poll_seconds", "Limit poll", [30, 60, 120, 300],
+         lambda v: f"every {v}s", False, "slower avoids rate limits"),
+        ("Data", "stats_retention_days", "Keep detail",
+         [7, 14, 31, 60, 90], lambda v: f"{v} days", False,
+         "how long per-message history stays in the cache"),
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="settings")
+        yield Static("", id="customize")
 
     def on_mount(self):
         self._row = 0
+        # Its own sky instance, so previewing a pack never disturbs the one
+        # running behind the dashboard.
+        self._preview_sky = None
+        self._preview_name = None
+        self.set_interval(1 / 6, self._draw)
         self._draw()
 
-    # The theme lives one level down in the config, so it reads and writes
-    # differently from the flat options.
+    # ------------------------------------------------------------- values
+
+    def _values(self, key):
+        if key == "theme":
+            return theme.preset_names()
+        if key == "sky":
+            return skies.pack_names()
+        if key == "motion":
+            return skies.motion_names()
+        return next(o[3] for o in self.OPTIONS if o[1] == key)
+
     def _value(self, key):
         if key == "theme":
             return PALETTE.get("name", theme.DEFAULT_PRESET)
@@ -529,14 +599,17 @@ class SettingsScreen(ModalScreen):
         if key == "theme":
             theme.save_preset(value)
             PALETTE["name"] = value
-        else:
-            CONFIG[key] = value
-            paths.update_config(**{key: value})
+            return
+        CONFIG[key] = value
+        paths.update_config(**{key: value})
         if key == "hide_costs":
             self.app._hide_costs = bool(value)
+        if key == "gauges" or key == "session_colors" or key == "layout":
+            self.app.refresh_sessions()
 
     def _step(self, delta):
-        key, _, values, _, live = self.OPTIONS[self._row]
+        _, key, _, _, _, live, _ = self.OPTIONS[self._row]
+        values = self._values(key)
         current = self._value(key)
         try:
             i = values.index(current)
@@ -545,7 +618,7 @@ class SettingsScreen(ModalScreen):
         self._set(key, values[(i + delta) % len(values)])
         self._draw()
         if not live:
-            self.app.notify("Saved — restart claudetop to apply")
+            self.app.notify("Saved — restart claudetop to see it")
 
     def action_prev(self):
         self._row = (self._row - 1) % len(self.OPTIONS)
@@ -561,41 +634,115 @@ class SettingsScreen(ModalScreen):
     def action_forward(self):
         self._step(1)
 
+    def action_reset(self):
+        _, key, label, _, _, live, _ = self.OPTIONS[self._row]
+        default = (theme.DEFAULT_PRESET if key == "theme"
+                   else paths.DEFAULT_CONFIG.get(key))
+        self._set(key, default)
+        self._draw()
+        self.app.notify(f"{label} back to default")
+
     def action_close(self):
         self.dismiss()
 
+    # ------------------------------------------------------------ preview
+
+    PREVIEW_W, PREVIEW_H = 34, 9
+
+    def _sky_preview(self):
+        """A live sample of the chosen pack, at the chosen motion."""
+        name = self._value("sky")
+        motion = self._value("motion")
+        if self._preview_name != (name, motion):
+            self._preview_sky = skies.build(
+                name, PALETTE, motion=motion,
+                model_tint=bool(self._value("model_tint")))
+            self._preview_sky.resize(self.PREVIEW_W, self.PREVIEW_H)
+            self._preview_sky.set_context(
+                projects=[{"cost": c} for c in (9, 5, 7, 3, 6, 2)],
+                session_names=["EVA-14", "reviewer", "claudetop"])
+            self._preview_name = (name, motion)
+        sky = self._preview_sky
+        sky.set_activity(3, 40)
+        sky.set_limit(62)
+        sky.tick()
+        cells = sky.frame()
+        rows = []
+        for y in range(self.PREVIEW_H):
+            line = Text(no_wrap=True, overflow="crop")
+            for x in range(self.PREVIEW_W):
+                cell = cells.get((x, y))
+                line.append(cell[0], style=cell[1]) if cell else line.append(" ")
+            rows.append(line)
+        return rows
+
+    def _preview_block(self):
+        out = [Text("Preview", style=f"bold {DIM}"), Text("")]
+        out += self._sky_preview()
+        out.append(Text(""))
+
+        style = self._value("gauges")
+        for label, pct in (("5h limit", 62.0), ("7d limit", 14.0)):
+            row = Text(no_wrap=True, overflow="crop")
+            row.append(f"{label:<9} ", style=TEXT)
+            row.append_text(widgets.render_gauge(
+                style, pct, 14, PALETTE,
+                series=[3, 5, 2, 8, 6, 9, 4, 7, 5, 9, 8, 6, 9, 12]))
+            row.append(f" {pct:.0f}%", style=widgets.gauge_color(pct, PALETTE))
+            out.append(row)
+
+        out.append(Text(""))
+        order = " → ".join(self.app.panel_order())
+        out.append(Text(f"panels  {order}", style=FAINT))
+        return out
+
+    # --------------------------------------------------------------- draw
+
     def _draw(self):
-        t = Text(no_wrap=True, overflow="crop")
-        # Plain text, one colour: a glyph here renders as a colour emoji in
-        # most terminals and ignores the palette.
-        t.append("Settings\n\n", style=f"bold {ACCENT}")
-
-        for i, (key, label, values, fmt, live) in enumerate(self.OPTIONS):
+        left = []
+        section = None
+        for i, (group, key, label, _, fmt, live, blurb) in enumerate(self.OPTIONS):
+            if group != section:
+                if section is not None:
+                    left.append(Text(""))
+                left.append(Text(group.upper(), style=f"bold {DIM}"))
+                section = group
             selected = i == self._row
-            current = self._value(key)
-            t.append("▸ " if selected else "  ", style=ACCENT)
-            t.append(f"{label:<14}", style=TEXT if selected else DIM)
-            t.append(fmt(current), style=ACCENT if selected else TEXT)
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append("▸ " if selected else "  ", style=ACCENT)
+            row.append(f"{label:<16}", style=TEXT if selected else DIM)
+            row.append(fmt(self._value(key)),
+                       style=ACCENT if selected else TEXT)
             if not live:
-                t.append(" *", style=FAINT)
-            t.append("\n")
-            # The full choice list only unfolds for the row you are on, so the
-            # panel stays a glance rather than a wall.
-            if selected and len(values) > 1:
-                row = Text("      ", no_wrap=True, overflow="ellipsis")
-                for v in values:
-                    chosen = v == current
-                    row.append(f"[{fmt(v)}]" if chosen else f" {fmt(v)} ",
-                               style=ACCENT if chosen else FAINT)
-                    row.append(" ")
-                t.append_text(row)
-                t.append("\n")
+                row.append(" *", style=FAINT)
+            left.append(row)
+            if selected:
+                left.append(Text(f"    {blurb}", style=FAINT))
+                choices = Text("    ", no_wrap=True, overflow="ellipsis")
+                for v in self._values(key):
+                    picked = v == self._value(key)
+                    choices.append(f"[{fmt(v)}]" if picked else f" {fmt(v)} ",
+                                   style=ACCENT if picked else FAINT)
+                left.append(choices)
 
-        t.append("\n* takes effect on restart\n", style=FAINT)
-        t.append("↑↓ choose   ←→ change   esc close", style=FAINT)
-        self.query_one("#settings", Static).update(t)
+        right = self._preview_block()
 
-
+        # Two columns, padded to the same height so the box stays square.
+        col_w = 44
+        height = max(len(left), len(right))
+        out = Text(no_wrap=True, overflow="crop")
+        out.append("Customize\n", style=f"bold {ACCENT}")
+        out.append("↑↓ move   ←→ change   r reset   esc close\n\n", style=FAINT)
+        for i in range(height):
+            lhs = left[i] if i < len(left) else Text("")
+            rhs = right[i] if i < len(right) else Text("")
+            out.append_text(lhs)
+            pad = max(1, col_w - lhs.cell_len)
+            out.append(" " * pad)
+            out.append_text(rhs)
+            out.append("\n")
+        out.append("\n* takes effect on the next launch", style=FAINT)
+        self.query_one("#customize", Static).update(out)
 class SessionDashboard(App):
     CSS = CSS
     TITLE = "Claude Session Manager"
@@ -610,7 +757,7 @@ class SessionDashboard(App):
         Binding("m", "toggle_map", "Star map"),
         Binding("h", "toggle_costs", "Hide costs"),
         Binding("r", "manual_refresh", "Refresh"),
-        Binding("ctrl+s", "settings", "Settings"),
+        Binding("ctrl+p", "customize", "Customize"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -625,14 +772,16 @@ class SessionDashboard(App):
         with VerticalScroll(id="analytics"):
             yield Static("", id="analytics-body")
         yield Static("", id="map")
+        yield Static("", id="saver")
         yield Footer()
 
     def on_mount(self):
         table = self.query_one("#table", DataTable)
-        table.add_columns(
-            "Status", "Name", "Kind", "Branch", "Cost",
-            "Uptime", "PID",
-        )
+        columns = ["Status", "Name", "Kind", "Branch", "Cost"]
+        if CONFIG.get("session_sparklines", True):
+            columns.append("Last 24h")
+        columns += ["Uptime", "PID"]
+        table.add_columns(*columns)
 
         self._view_mode = "home"
         self._selected_key = None
@@ -641,7 +790,9 @@ class SessionDashboard(App):
         self._job_states = {}      # for the event meteors
         self._last_prompts = None
         self._tick = 0
-        for widget_id in ("#table", "#analytics", "#map"):
+        self._last_input = time.time()
+        self._saver_on = False
+        for widget_id in ("#table", "#analytics", "#map", "#saver"):
             self.query_one(widget_id).display = False
 
         self.refresh_sessions()
@@ -669,7 +820,18 @@ class SessionDashboard(App):
             self._selected_key = event.row_key.value
 
     VIEW_WIDGETS = {"home": "#home", "sessions": "#table",
-                    "analytics": "#analytics", "map": "#map"}
+                    "analytics": "#analytics", "map": "#map",
+                    "saver": "#saver"}
+
+    def on_key(self, event):
+        """Any key counts as presence: it resets the idle clock and dismisses
+        the screensaver without also being taken as a command."""
+        self._last_input = time.time()
+        if self._saver_on:
+            self._saver_on = False
+            self._show_view(self._saver_return)
+            event.stop()
+            event.prevent_default()
 
     def _show_view(self, mode):
         self._view_mode = mode
@@ -700,8 +862,8 @@ class SessionDashboard(App):
         self._hide_costs = not self._hide_costs
         self.notify("Costs hidden" if self._hide_costs else "Costs shown")
 
-    def action_settings(self):
-        self.push_screen(SettingsScreen())
+    def action_customize(self):
+        self.push_screen(CustomizeScreen())
 
     def refresh_sessions(self):
         self._tick += 1
@@ -754,6 +916,9 @@ class SessionDashboard(App):
                 self._render_analytics(summary)
         elif self._view_mode == "map":
             self._render_map(interactive_rows, by_parent, detached)
+        elif self._view_mode == "saver":
+            self._render_saver(u, summary)
+        self._check_idle()
 
         self._render_limit_strip(u, summary)
 
@@ -776,6 +941,8 @@ class SessionDashboard(App):
         table = self.query_one("#table", DataTable)
         table.clear()
         self._row_meta = {}
+        traces = ((stats.snapshot().get("summary") or {}).get("session_series")
+                  or {})
 
         frame = SPINNER_FRAMES[int(time.time() * 8) % len(SPINNER_FRAMES)]
 
@@ -796,12 +963,17 @@ class SessionDashboard(App):
             branch_cell = f"[{DIM}]{self._truncate(branch, 20)}[/]" if branch else f"[{FAINT}]-[/]"
             cost = fmt_cost(r.get("cost"))
             cost_cell = f"[{DIM}]{cost}[/]" if cost != "-" else f"[{FAINT}]-[/]"
-            table.add_row(
-                status_cell, r["name"], r["kind"], branch_cell,
-                cost_cell, uptime,
-                str(r["pid"]) if r["pid"] else "-",
-                key=r["row_key"],
-            )
+            cells = [status_cell,
+                     Text(r["name"], style=self.session_color(r)),
+                     r["kind"], branch_cell, cost_cell]
+            if CONFIG.get("session_sparklines", True):
+                series = traces.get(r.get("session_id")) or []
+                cells.append(widgets.render_gauge(
+                    "trend", 0, 14, PALETTE,
+                    color=self.session_color(r), series=series)
+                    if series else Text("-", style=FAINT))
+            cells += [uptime, str(r["pid"]) if r["pid"] else "-"]
+            table.add_row(*cells, key=r["row_key"])
 
         if self._selected_key and self._selected_key in self._row_meta:
             for idx, key in enumerate(self._row_meta):
@@ -820,6 +992,10 @@ class SessionDashboard(App):
         busy = sum(1 for r in rows if r["status"] in ("busy", "blocked"))
         burn = (summary or {}).get("burn", {}).get("now", 0.0)
         SKY.set_activity(busy, burn)
+        models = (summary or {}).get("by_model_30d") or []
+        SKY.set_model(models[0]["model"] if models else None)
+        SKY.set_context(projects=(summary or {}).get("by_project_30d") or [],
+                        session_names=[r["name"] for r in rows if r["name"]])
 
         five = next((w for w in u["windows"] if w["label"].startswith("5h")), None)
         if five:
@@ -852,6 +1028,65 @@ class SessionDashboard(App):
         frame = SKY.frame(dim=True)
         ox, oy = region.x, region.y
         return {(x - ox, y - oy): v for (x, y), v in frame.items()}, (0, 0)
+
+    SESSION_TINTS = ("accent", "green", "yellow", "star", "red")
+
+    def session_color(self, row):
+        """A stable colour per session, so the same name is the same colour
+        in every view. 'status' colours by state instead, 'off' opts out."""
+        mode = CONFIG.get("session_colors") or "hash"
+        if mode == "off":
+            return TEXT
+        if mode == "status":
+            return {"blocked": RED, "busy": ACCENT}.get(row.get("status"), DIM)
+        name = row.get("name") or ""
+        key = self.SESSION_TINTS[sum(ord(c) for c in name) % len(self.SESSION_TINTS)]
+        return PALETTE[key]
+
+    def panel_order(self):
+        panels = CONFIG.get("panels")
+        if isinstance(panels, list) and panels:
+            return [p for p in panels if p in LAYOUTS["full"]]
+        return LAYOUTS.get(CONFIG.get("layout") or DEFAULT_LAYOUT,
+                           LAYOUTS[DEFAULT_LAYOUT])
+
+    def compact(self):
+        return (CONFIG.get("layout") or DEFAULT_LAYOUT) in COMPACT_LAYOUTS
+
+    def weather(self, u, summary):
+        """One line a teammate can read without learning the dashboard.
+
+        Conditions come from the 5h window and where its current pace lands:
+        clear when there is room, storm when this pace blows the cap.
+        """
+        five = next((w for w in u["windows"] if w["label"].startswith("5h")), None)
+        if not five:
+            return None
+        pct = five["pct"]
+        proj = None
+        if five["resets_in"] is not None:
+            span = 5 * 3600
+            elapsed = max(0.0, min(1.0, (span - five["resets_in"]) / span))
+            proj = usage.projected(five, elapsed)
+        if pct >= 90:
+            glyph, word, style = "▲", "at the limit", RED
+        elif proj is not None and proj >= 100:
+            glyph, word, style = "◤", "storm", RED
+        elif proj is not None and proj >= 75:
+            glyph, word, style = "◔", "breezy", YELLOW
+        else:
+            glyph, word, style = "○", "clear", GREEN
+        t = Text(no_wrap=True, overflow="ellipsis")
+        t.append(f"{glyph} {word}", style=style)
+        if proj is not None and proj >= 75 and five["resets_in"]:
+            hit = self._time_to_limit(five)
+            if hit is not None:
+                t.append(f" · cap in {widgets.duration(hit)}", style=DIM)
+            else:
+                t.append(f" · ~{proj:.0f}% by reset", style=DIM)
+        else:
+            t.append(f" · {100 - pct:.0f}% of the 5h window left", style=DIM)
+        return t
 
     def _data_subtitle(self, st, u):
         """Only what needs attention. A healthy dashboard says nothing here —
@@ -887,6 +1122,10 @@ class SessionDashboard(App):
                      style=widgets.gauge_color(w["pct"], PALETTE))
             if w["resets_in"] is not None:
                 t.append(f" · {widgets.duration(w['resets_in'])}", style=FAINT)
+        forecast = self.weather(u, summary) if CONFIG.get("weather", True) else None
+        if forecast is not None:
+            t.append("   ")
+            t.append_text(forecast)
         burn = (summary or {}).get("burn")
         if burn and not self._hide_costs:
             t.append(f"   burn {widgets.money(burn['now'])}/hr", style=DIM)
@@ -928,7 +1167,8 @@ class SessionDashboard(App):
             suffix = (f"resets in {widgets.duration(w['resets_in'])}"
                       if w["resets_in"] is not None else None)
             lines.append(widgets.gauge_row(w["label"], w["pct"], width, PALETTE,
-                                           suffix=suffix))
+                                           suffix=suffix,
+                                           style=CONFIG.get("gauges") or "bar"))
             if w["resets_in"] is None:
                 continue
             note = Text(f"{'':<13}", style=DIM)
@@ -1049,15 +1289,18 @@ class SessionDashboard(App):
                       f"peak {int(hstep / 60)}m rate {money(max(hour_rate or [0]))}/hr",
                       f"╌ avg {money(mean_of(hour_rate))}/hr",
                       f"total {money(sum(hours))}")]
-        lines += widgets.linechart(hour_rate, 6, width, PALETTE, color=ACCENT,
-                                   value_fmt=money, labels=hour_labels)
+        chart_h = 4 if self.compact() else 6
+        lines += widgets.linechart(hour_rate, chart_h, width, PALETTE,
+                                   color=ACCENT, value_fmt=money,
+                                   labels=hour_labels)
         lines.append(head("Per day",
                           f"last 14 days, sampled every {int(dstep / 3600)}h",
                           f"peak {int(dstep / 3600)}h rate {money(max(day_rate or [0]))}/day",
                           f"╌ avg {money(mean_of(day_rate))}/day",
                           f"busiest day {money(max(days or [0]))}"))
-        lines += widgets.linechart(day_rate, 6, width, PALETTE, color=GREEN,
-                                   value_fmt=money, labels=day_labels)
+        lines += widgets.linechart(day_rate, chart_h, width, PALETTE,
+                                   color=GREEN, value_fmt=money,
+                                   labels=day_labels)
         return lines
 
     def _live_lines(self, rows, width):
@@ -1065,7 +1308,8 @@ class SessionDashboard(App):
             return [Text("no sessions running", style=FAINT)]
         frame = SPINNER_FRAMES[int(time.time() * 8) % len(SPINNER_FRAMES)]
         lines = []
-        for r in rows[:6]:
+        limit = 3 if self.compact() else 6
+        for r in rows[:limit]:
             t = Text(no_wrap=True, overflow="crop")
             if r["status"] == "blocked":
                 t.append("● ", style=RED)
@@ -1085,7 +1329,8 @@ class SessionDashboard(App):
             spare = max(0, width - 2 - 14 - 12 - 8)
             name_w = max(10, int(spare * 0.55))
             branch_w = max(0, spare - name_w)
-            t.append(f"{self._truncate(r['name'], name_w):<{name_w}} ", style=TEXT)
+            t.append(f"{self._truncate(r['name'], name_w):<{name_w}} ",
+                     style=self.session_color(r))
             t.append(f"{state:<14}", style=state_style)
             if branch_w:
                 t.append(f"{self._truncate(r.get('branch') or '-', branch_w):<{branch_w}} ",
@@ -1096,8 +1341,8 @@ class SessionDashboard(App):
             if t.cell_len > width:
                 t.truncate(width, overflow="ellipsis")
             lines.append(t)
-        if len(rows) > 6:
-            lines.append(Text(f"+{len(rows) - 6} more — press s", style=FAINT))
+        if len(rows) > limit:
+            lines.append(Text(f"+{len(rows) - limit} more — press s", style=FAINT))
         return lines
 
     def _render_home(self, rows, u, summary):
@@ -1118,10 +1363,15 @@ class SessionDashboard(App):
             # inside the next panel still lines up with the field behind it.
             y += len(lines) + 2 + PANEL_GAP
 
-        add("⚡ Limits", self._limits_lines(u, inner), ACCENT)
-        add("$ Spending", self._spending_lines(summary, inner), GREEN)
-        add("◷ Spend trend", self._chart_lines(summary, inner), ACCENT)
-        add("● Live now", self._live_lines(rows, inner), YELLOW)
+        builders = {
+            "limits": ("⚡ Limits", lambda: self._limits_lines(u, inner), ACCENT),
+            "spend": ("$ Spending", lambda: self._spending_lines(summary, inner), GREEN),
+            "trend": ("◷ Spend trend", lambda: self._chart_lines(summary, inner), ACCENT),
+            "live": ("● Live now", lambda: self._live_lines(rows, inner), YELLOW),
+        }
+        for key in self.panel_order():
+            title, build, color = builders[key]
+            add(title, build(), color)
 
         # Whatever is left below the panels is open sky, and so are the gaps
         # between them — a blank line would punch a hole in the starfield.
@@ -1242,6 +1492,87 @@ class SessionDashboard(App):
             out.append("\n")
             y += PANEL_GAP
         body.update(out)
+
+    # ----------------------------------------------------------- screensaver
+
+    BIG_DIGITS = {
+        "0": ("███", "█ █", "█ █", "█ █", "███"),
+        "1": ("  █", "  █", "  █", "  █", "  █"),
+        "2": ("███", "  █", "███", "█  ", "███"),
+        "3": ("███", "  █", "███", "  █", "███"),
+        "4": ("█ █", "█ █", "███", "  █", "  █"),
+        "5": ("███", "█  ", "███", "  █", "███"),
+        "6": ("███", "█  ", "███", "█ █", "███"),
+        "7": ("███", "  █", "  █", "  █", "  █"),
+        "8": ("███", "█ █", "███", "█ █", "███"),
+        "9": ("███", "█ █", "███", "  █", "███"),
+        ":": ("   ", " █ ", "   ", " █ ", "   "),
+    }
+
+    def _check_idle(self):
+        """Drop into the screensaver after the configured quiet spell."""
+        minutes = CONFIG.get("idle_screensaver_minutes") or 0
+        if not minutes:
+            return
+        idle = time.time() - self._last_input
+        if not self._saver_on and idle >= minutes * 60:
+            self._saver_on = True
+            self._saver_return = self._view_mode
+            self._show_view("saver")
+
+    def _render_saver(self, u, summary):
+        """Full-screen sky, a big clock and the two gauges. This is what the
+        dashboard looks like on the spare monitor it will end up living on."""
+        widget = self.query_one("#saver", Static)
+        width = max(40, widget.content_size.width)
+        height = max(10, widget.content_size.height)
+        sky = SKY.frame()
+        grid = [[None] * width for _ in range(height)]
+
+        def put_text(x, y, s, style):
+            for i, ch in enumerate(s):
+                if 0 <= x + i < width and 0 <= y < height:
+                    grid[y][x + i] = (ch, style)
+
+        clock = datetime.now().strftime("%H:%M")
+        art = ["  ".join(self.BIG_DIGITS.get(c, ("   ",) * 5)[row]
+                         for c in clock) for row in range(5)]
+        top = max(0, height // 2 - 5)
+        for i, row in enumerate(art):
+            put_text(max(0, (width - len(row)) // 2), top + i, row, ACCENT)
+
+        y = top + 7
+        for w in u["windows"][:2]:
+            row = Text(no_wrap=True)
+            row.append(f"{w['label']:<10}", style=DIM)
+            row.append_text(widgets.render_gauge(
+                CONFIG.get("gauges") or "bar", w["pct"], 28, PALETTE))
+            row.append(f" {w['pct']:.0f}%",
+                       style=widgets.gauge_color(w["pct"], PALETTE))
+            if w["resets_in"] is not None:
+                row.append(f"  resets in {widgets.duration(w['resets_in'])}",
+                           style=FAINT)
+            put_text(max(0, (width - row.cell_len) // 2), y, row.plain, DIM)
+            y += 1
+        if summary and not self._hide_costs:
+            spend = (f"today {widgets.money(summary['windows']['today']['cost'])}"
+                     f"   ·   burn {widgets.money(summary['burn']['now'])}/hr")
+            put_text(max(0, (width - len(spend)) // 2), y + 1, spend, DIM)
+        hint = "press any key"
+        put_text(max(0, (width - len(hint)) // 2), height - 2, hint, FAINT)
+
+        out = Text(no_wrap=True, overflow="crop")
+        for row_i in range(height):
+            for col in range(width):
+                cell = grid[row_i][col]
+                if cell:
+                    out.append(cell[0], style=cell[1])
+                else:
+                    star = sky.get((col, row_i))
+                    out.append(star[0], style=star[1]) if star else out.append(" ")
+            if row_i < height - 1:
+                out.append(chr(10))
+        widget.update(out)
 
     # -------------------------------------------------------------- star map
 

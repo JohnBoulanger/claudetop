@@ -72,6 +72,17 @@ DEFAULT_CONFIG = {
     "usage_poll_seconds": 60,
     "stats_retention_days": 31,   # how long per-message detail is kept in cache
     "hide_costs": False,
+    # Everything under Customize (ctrl+p). None means "use the built-in".
+    "sky": "stars",               # stars rain embers ocean city matrix off
+    "motion": "normal",           # off calm normal lively
+    "model_tint": True,           # colour the sky by the busiest model
+    "gauges": "bar",              # bar blocks dial trend
+    "layout": "full",             # full compact minimal charts
+    "panels": None,               # explicit panel order, overrides layout
+    "session_colors": "hash",     # hash status off
+    "weather": True,              # the one-line forecast under the gauges
+    "idle_screensaver_minutes": 0,  # 0 disables
+    "session_sparklines": True,   # 24h trace in the sessions view
 }
 
 

@@ -50,7 +50,65 @@ def gauge(pct, width, palette, color=None):
     return t
 
 
-def gauge_row(label, pct, width, palette, label_w=12, suffix=None, color=None):
+DIAL_ARCS = "◐◓◑◒"
+BLOCKS = "▁▂▃▄▅▆▇█"
+SPARK = "▁▂▃▄▅▆▇█"
+
+
+def gauge_blocks(pct, width, palette, color=None):
+    """Chunky segmented meter: each cell is a whole step, filled or not."""
+    width = max(4, int(width))
+    color = color or gauge_color(pct, palette)
+    filled = int(round(min(100.0, max(0.0, pct or 0)) / 100.0 * width))
+    t = Text()
+    t.append("▉" * filled, style=color)
+    t.append("▁" * (width - filled), style=palette["faint"])
+    return t
+
+
+def gauge_dial(pct, width, palette, color=None):
+    """A spinner-style dial plus a short bar — reads at a glance from across
+    the room, which is where a shared dashboard usually is."""
+    color = color or gauge_color(pct, palette)
+    frac = min(1.0, max(0.0, (pct or 0) / 100.0))
+    t = Text()
+    t.append(DIAL_ARCS[min(3, int(frac * 4))] + " ", style=color)
+    t.append_text(gauge(pct, max(4, width - 2), palette, color=color))
+    return t
+
+
+def gauge_trend(pct, width, palette, color=None, series=None):
+    """The recent trace, ending at the current value."""
+    color = color or gauge_color(pct, palette)
+    if not series:
+        return gauge(pct, width, palette, color=color)
+    width = max(4, int(width))
+    top = max(series) or 1.0
+    tail = series[-width:]
+    t = Text()
+    for v in tail:
+        t.append(SPARK[min(len(SPARK) - 1, int(v / top * (len(SPARK) - 1)))],
+                 style=color if v else palette["faint"])
+    if len(tail) < width:
+        t.append(" " * (width - len(tail)))
+    return t
+
+
+GAUGE_STYLES = {
+    "bar": lambda pct, w, pal, color=None, series=None: gauge(pct, w, pal, color),
+    "blocks": lambda pct, w, pal, color=None, series=None: gauge_blocks(pct, w, pal, color),
+    "dial": lambda pct, w, pal, color=None, series=None: gauge_dial(pct, w, pal, color),
+    "trend": lambda pct, w, pal, color=None, series=None: gauge_trend(pct, w, pal, color, series),
+}
+
+
+def render_gauge(style, pct, width, palette, color=None, series=None):
+    fn = GAUGE_STYLES.get(style) or GAUGE_STYLES["bar"]
+    return fn(pct, width, palette, color, series)
+
+
+def gauge_row(label, pct, width, palette, label_w=12, suffix=None, color=None,
+              style="bar", series=None):
     """`Usage 5h  ███░░░░  47.0%  <suffix>` as one line.
 
     Pass color to opt out of the limit-style thresholds — a high cache-hit
@@ -62,7 +120,8 @@ def gauge_row(label, pct, width, palette, label_w=12, suffix=None, color=None):
     # line past the panel and wraps it.
     reserve = label_w + 1 + 7 + (2 + len(suffix) if suffix else 0)
     bar_w = max(8, width - reserve)
-    t.append_text(gauge(pct, bar_w, palette, color=color))
+    t.append_text(render_gauge(style, pct, bar_w, palette, color=color,
+                               series=series))
     t.append(f" {0.0 if pct is None else pct:>5.1f}%", style=color)
     if suffix:
         t.append(f"  {suffix}", style=palette["dim"])

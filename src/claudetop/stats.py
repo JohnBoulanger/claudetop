@@ -313,6 +313,7 @@ def summarize(files, now=None, five_hour_start=None):
     by_project = {}          # 30d cost per repo
     by_tool = {}             # 30d call count per tool
     per_session_today = {}   # today's cost per transcript, for the leaderboard
+    session_series = {}      # session id -> 24 hourly costs, for row sparklines
     hourly = [0.0] * 24      # last 24 hours, oldest first
     daily = [0.0] * 14       # last 14 local days, oldest first
     monthly = {}             # "2026-08" -> cost, every month on record
@@ -356,7 +357,13 @@ def summarize(files, now=None, five_hour_start=None):
         for ts, model, tin, tout, tcr, tcw, tools, nfiles in entry.get("events", []):
             c = pricing.cost(model, tin, tout, tcr, tcw)
             if ts >= hour0:
-                hourly[min(23, int((ts - hour0) // 3600))] += c
+                slot = min(23, int((ts - hour0) // 3600))
+                hourly[slot] += c
+                # Only sessions active in the last day get a trace, so this
+                # stays small no matter how many transcripts exist.
+                sid = entry.get("sid")
+                if sid:
+                    session_series.setdefault(sid, [0.0] * 24)[slot] += c
                 fine_hourly[min(len(fine_hourly) - 1,
                                 int((ts - hour0) // fine_hour_step))] += c
             if ts >= day0:
@@ -468,6 +475,7 @@ def summarize(files, now=None, five_hour_start=None):
         "fine_daily": fine_daily,            # 6-hour buckets over 14 days
         "fine_daily_step": fine_day_step,
         "monthly": sorted(monthly.items()),   # [("2026-08", cost), ...]
+        "session_series": session_series,     # session id -> 24 hourly costs
         "burn": burn,
         "transcripts": len(files),
     }

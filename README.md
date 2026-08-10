@@ -29,7 +29,7 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 | `m` | Star map | Sessions drawn as a constellation, each with its background jobs orbiting it. |
 | `h` | — | Hide every dollar figure, for screen sharing. |
 | `r` | — | Force a refresh. |
-| `ctrl+s` | Settings | Theme, hide-costs, usage polling and cache retention, written straight to the config file. |
+| `ctrl+p` | Customize | Every option, grouped, with a live preview of the background and gauges beside it. Arrows change values, `r` resets one to its default, and each change is written to the config file immediately. |
 | `q` | — | Quit. |
 
 A compact 5h / 7d gauge strip sits under the title in every view, so you never
@@ -37,14 +37,25 @@ have to leave a view to check where you are against the limits.
 
 ## The sky
 
-The starfield fills the background of every view, and it is not just
-decoration — it is a second, ambient read on the same data:
+The background fills every view, and it is not decoration — it is a second,
+ambient read on the same data. Pick a pack in Customize; all of them speak the
+same language:
 
 | What you see | What it means |
 |--------------|---------------|
-| Stars drifting, and more of them | Live burn rate and how many sessions are working. An idle machine has a still, sparse field; flat out the sky is about 2.6x as dense and scrolls visibly. |
+| More of it, moving faster | Live burn rate and how many sessions are working. Idle is still and sparse; flat out is about 2.6x as dense and visibly in motion. |
 | A meteor | An event just happened — green for a background job finishing, red for a session that needs your input, terracotta for a new prompt. |
-| The tide along the bottom | 5h utilization. It rises as you spend and turns red past 90%. |
+| A level along the bottom | 5h utilization. It rises as you spend and turns red past 90%. |
+| Its colour | The model burning most right now, when `model_tint` is on. |
+
+Packs: `stars` (default), `rain`, `embers`, `ocean` (waterline is your 5h
+window), `city` (a skyline where each building is a repo and its height is
+that repo's 30-day spend), `matrix` (one falling column per working session,
+spelled from their names), and `off`.
+
+Writing another is a class with `set_activity`, `set_limit`, `emit` and
+`frame` — see `skies.py`. Because the contract is data-in / cells-out, a new
+pack cannot change what any number means.
 
 Textual cannot show a lower layer through an upper widget's cells, so the
 panels paint their own dimmed stars in the gaps between text. That keeps the
@@ -131,6 +142,24 @@ Colors are compiled into the Textual stylesheet at startup, so a theme change
 lands on the next launch; the settings screen marks those options with a `*`.
 Older configs naming `espresso` or `espresso-warm` still load — they are the
 same palettes as `black` and `warm`.
+
+### Customize
+
+`ctrl+p` covers all of this; the config file is only needed for the two things
+the page cannot express (`panels`, and individual theme colours).
+
+| Key | Options | What it does |
+|-----|---------|--------------|
+| `sky` | stars, rain, embers, ocean, city, matrix, off | the ambient background |
+| `motion` | off, calm, normal, lively | animation budget — turn it down over SSH, off for a still screen |
+| `model_tint` | true/false | colour the background by the busiest model |
+| `gauges` | bar, blocks, dial, trend | how the 5h and 7d meters draw |
+| `layout` | full, compact, minimal, charts | which panels the home page stacks |
+| `panels` | e.g. `["limits","live"]` | explicit panel order, overrides `layout` |
+| `session_colors` | hash, status, off | hash gives each session a stable colour everywhere |
+| `weather` | true/false | plain-language forecast line under the gauges |
+| `idle_screensaver_minutes` | 0 to disable | full-screen sky and clock once you stop typing |
+| `session_sparklines` | true/false | 24h cost trace per row in the sessions view |
 
 `claudetop --paths` prints the config and cache locations.
 
