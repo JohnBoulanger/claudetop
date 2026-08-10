@@ -990,15 +990,20 @@ class SessionDashboard(App):
 
         hours = s["hourly_24h"]
         start = s.get("hourly_start") or (time.time() - 24 * 3600)
-        # A label every two hours, on the hour.
+        hstep = s.get("fine_hourly_step") or 3600
+        # Sample every 15 minutes but plot the rate, so the shape is fine
+        # grained while the axis still reads in dollars per hour.
+        hour_rate = [v * 3600 / hstep for v in (s.get("fine_hourly") or hours)]
         hour_labels = []
-        for i in range(len(hours)):
-            when = datetime.fromtimestamp(start + i * 3600)
-            # 12-hour clock, written by hand — the platform strftime codes for
-            # an unpadded hour differ between Windows and everything else.
+        for i in range(len(hour_rate)):
+            when = datetime.fromtimestamp(start + i * hstep)
+            # A label every two hours, on the hour. 12-hour clock written by
+            # hand — the strftime code for an unpadded hour differs between
+            # Windows and everything else.
+            on_tick = when.hour % 2 == 0 and when.minute < hstep / 60
             hour_labels.append(
                 f"{when.hour % 12 or 12}{'am' if when.hour < 12 else 'pm'}"
-                if i % 2 == 0 else "")
+                if on_tick else "")
 
         days = s["daily_14d"]
         dstart = s.get("daily_start") or (time.time() - 13 * 86400)
@@ -1027,28 +1032,28 @@ class SessionDashboard(App):
                 t.append(f"   {f}", style=DIM)
             return t
 
-        # The y axis is in bucket units, so the header quotes the same unit —
-        # a 6-hour peak and a daily total are different numbers and showing
-        # one above the other reads as a bug.
-        dhours = int((s.get("fine_daily_step") or 86400) / 3600)
+        # Both charts sample finer than their unit and plot a rate, so the y
+        # axis reads in dollars per hour and per day rather than per bucket.
+        day_rate = [v * 86400 / dstep for v in fine_days]
 
-        # The dashed line on each chart is the mean of the non-idle buckets;
+        # The dashed line on each chart is the mean of the non-idle samples;
         # name it here so the gutter does not have to.
         def mean_of(series):
             live = [v for v in series if v > 0]
             return sum(live) / len(live) if live else 0.0
 
-        lines = [head("Per hour", "last 24h",
-                      f"peak {money(max(hours or [0]))}",
-                      f"╌ avg {money(mean_of(hours))}",
+        lines = [head("Per hour", f"last 24h, sampled every {int(hstep / 60)}m",
+                      f"peak {int(hstep / 60)}m rate {money(max(hour_rate or [0]))}/hr",
+                      f"╌ avg {money(mean_of(hour_rate))}/hr",
                       f"total {money(sum(hours))}")]
-        lines += widgets.linechart(hours, 6, width, PALETTE, color=ACCENT,
+        lines += widgets.linechart(hour_rate, 6, width, PALETTE, color=ACCENT,
                                    value_fmt=money, labels=hour_labels)
-        lines.append(head("Per day", f"last 14 days in {dhours}h steps",
-                          f"peak {money(max(fine_days or [0]))}/{dhours}h",
-                          f"╌ avg {money(mean_of(fine_days))}",
+        lines.append(head("Per day",
+                          f"last 14 days, sampled every {int(dstep / 3600)}h",
+                          f"peak {int(dstep / 3600)}h rate {money(max(day_rate or [0]))}/day",
+                          f"╌ avg {money(mean_of(day_rate))}/day",
                           f"busiest day {money(max(days or [0]))}"))
-        lines += widgets.linechart(fine_days, 6, width, PALETTE, color=GREEN,
+        lines += widgets.linechart(day_rate, 6, width, PALETTE, color=GREEN,
                                    value_fmt=money, labels=day_labels)
         return lines
 

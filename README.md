@@ -137,11 +137,13 @@ same palettes as `black` and `warm`.
 
 ## Performance
 
-Charts are continuous lines drawn with box glyphs: hourly buckets over the
-last 24 hours, and 6-hour buckets over the last 14 days so a busy afternoon
-does not vanish into a daily total. Each has value labels at the top, midpoint
-and zero with a sparse gridline, and a dashed rule at the mean of the non-idle
-buckets. The y axis is in bucket units and the header says so.
+Charts are continuous lines drawn with box glyphs. They sample finer than
+their unit and plot a rate: the 24h chart takes a reading every 15 minutes and
+shows dollars per hour, the 14-day chart reads every 6 hours and shows dollars
+per day. That keeps the shape fine grained while the axis stays in units you
+recognise — so a peak can exceed any real hour's total, and the header names
+it as a rate. Each chart has value labels at the top, midpoint and zero with a
+sparse gridline, and a dashed rule at the mean of the non-idle samples.
 
 The first launch reads every transcript once — about 5 seconds for 430 MB — and
 caches per-file results. Per-message detail is pruned after `stats_retention_days`,
