@@ -59,6 +59,10 @@ BUSY_VERBS = [
 ]
 STATUS_RANK = {"blocked": 0, "busy": 1, "running": 2, "idle": 3}
 
+# Blank rows between stacked panels. One is enough to stop the borders reading
+# as a single table; the gap is filled with sky, not whitespace.
+PANEL_GAP = 1
+
 # Palette comes from theme.py: a preset plus any per-key overrides the user put
 # in their claudetop config. Defaults to the warm espresso look.
 BG = PALETTE["bg"]
@@ -100,18 +104,19 @@ Screen {{
 }}
 
 #banner {{
-    padding: 1 2 0 2;
+    padding: 1 3 0 3;
     background: {BG};
 }}
 
 #subtitle {{
     color: {DIM};
-    padding: 0 2 0 2;
+    padding: 0 3 0 3;
     background: {BG};
+    height: auto;
 }}
 
 #limit-strip {{
-    padding: 0 2 1 2;
+    padding: 1 3 1 3;
     background: {BG};
     height: auto;
 }}
@@ -128,6 +133,7 @@ DataTable {{
 #home, #map {{
     background: {BG};
     color: {TEXT};
+    margin: 0 1 0 1;
     height: 1fr;
     scrollbar-size: 1 1;
 }}
@@ -756,7 +762,11 @@ class SessionDashboard(App):
             subtitle = self._data_subtitle(st, u) + attn
         else:
             subtitle = f"{len(rows)} session{'s' if len(rows) != 1 else ''} · polling ~/.claude{attn}"
-        self.query_one("#subtitle", Static).update(subtitle)
+        sub = self.query_one("#subtitle", Static)
+        sub.update(subtitle)
+        # With nothing to report the line would be an empty band under the
+        # title; drop it instead and let the layout close up.
+        sub.display = bool(subtitle.strip())
         self._row_meta = self._row_meta if hasattr(self, "_row_meta") else {}
         for r in rows:
             self._row_meta[r["row_key"]] = r
@@ -845,15 +855,14 @@ class SessionDashboard(App):
         return {(x - ox, y - oy): v for (x, y), v in frame.items()}, (0, 0)
 
     def _data_subtitle(self, st, u):
+        """Only what needs attention. A healthy dashboard says nothing here —
+        the transcript count and the age of the limits reading are noise once
+        you trust them, and the panels carry the same facts anyway."""
         parts = []
         if st.get("building"):
             done, total = st.get("done", 0), st.get("total", 0)
             parts.append(f"[{ACCENT}]building transcript cache {done}/{total}[/]")
-        elif st.get("summary"):
-            parts.append(f"{st['summary']['transcripts']} transcripts")
-        if u["fetched_at"]:
-            parts.append(f"[{FAINT}]limits {int(time.time() - u['fetched_at'])}s ago[/]")
-        elif u["error"]:
+        if u["error"] and not u["fetched_at"]:
             parts.append(f"[{RED}]limits unavailable[/]")
         if self._hide_costs:
             parts.append(f"[{ACCENT}]costs hidden[/]")
@@ -1060,20 +1069,28 @@ class SessionDashboard(App):
             nonlocal y
             panel = widgets.starred_panel(title, lines, width, PALETTE, sky=sky,
                                           origin=(0, y), title_color=color)
-            blocks.append(panel)
-            y += len(lines) + 2
+            blocks.append((panel, y))
+            # Panel height plus the gap row that follows it, so the sky drawn
+            # inside the next panel still lines up with the field behind it.
+            y += len(lines) + 2 + PANEL_GAP
 
         add("⚡ Limits", self._limits_lines(u, inner), ACCENT)
         add("$ Spending", self._spending_lines(summary, inner), GREEN)
         add("◷ Spend trend", self._chart_lines(summary, inner), ACCENT)
         add("● Live now", self._live_lines(rows, inner), YELLOW)
 
-        # Whatever is left below the panels is open sky.
+        # Whatever is left below the panels is open sky, and so are the gaps
+        # between them — a blank line would punch a hole in the starfield.
         out = Text(no_wrap=True, overflow="crop")
-        for i, b in enumerate(blocks):
-            out.append_text(b)
-            if i < len(blocks) - 1:
+        for i, (block, top) in enumerate(blocks):
+            out.append_text(block)
+            if i == len(blocks) - 1:
+                continue
+            gap_row = top + block.plain.count("\n") + 1
+            for g in range(PANEL_GAP):
                 out.append("\n")
+                out.append_text(widgets.sky_row(gap_row + g, width, sky, PALETTE))
+            out.append("\n")
         for row in range(y, height):
             out.append("\n")
             out.append_text(widgets.sky_row(row, width, sky, PALETTE))
@@ -1158,15 +1175,19 @@ class SessionDashboard(App):
 
         out = Text(no_wrap=True, overflow="crop")
         y = 0
-        for i, (title, lines, color) in enumerate(sections):
-            if not lines:
-                continue
+        drawn = [s for s in sections if s[1]]
+        for i, (title, lines, color) in enumerate(drawn):
             out.append_text(widgets.starred_panel(title, lines, width, PALETTE,
                                                   sky=sky, origin=(0, y),
                                                   title_color=color))
             y += len(lines) + 2
-            if i < len(sections) - 1:
+            if i == len(drawn) - 1:
+                continue
+            for g in range(PANEL_GAP):
                 out.append("\n")
+                out.append_text(widgets.sky_row(y + g, width, sky, PALETTE))
+            out.append("\n")
+            y += PANEL_GAP
         body.update(out)
 
     # -------------------------------------------------------------- star map
