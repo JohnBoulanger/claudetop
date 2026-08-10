@@ -24,9 +24,18 @@ import threading
 import time
 from pathlib import Path
 
-WT_ROOT = Path("C:/eva-wt")
-BASE_DIR = Path.home() / "turing-analytics"
-ORG = "Turing-Analytics-Inc"
+from . import paths
+
+# Layout is per-machine, so it comes from the claudetop config:
+#   worktree_root      where /ship puts ticket worktrees
+#   worktree_base_dir  where the base clones live
+#   worktree_org       GitHub org, for `gh pr` lookups
+# With no config the old EVA defaults still apply, so nothing changes for an
+# existing install.
+_CFG = paths.load_config()
+WT_ROOT = Path(_CFG.get("worktree_root") or "C:/eva-wt")
+BASE_DIR = Path(_CFG.get("worktree_base_dir") or (Path.home() / "turing-analytics"))
+ORG = _CFG.get("worktree_org") or "Turing-Analytics-Inc"
 CARGO_TARGET = WT_ROOT / "_cargo-target"
 
 GIT_TIMEOUT = 8       # seconds per git call

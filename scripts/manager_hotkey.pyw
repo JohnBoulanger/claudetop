@@ -12,8 +12,7 @@ import subprocess
 import sys
 from ctypes import wintypes
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import winfocus  # noqa: E402
+from claudetop import focus as winfocus  # installed by `pipx install claudetop`
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
@@ -26,10 +25,9 @@ user32 = ctypes.windll.user32
 
 
 def launch_manager():
-    dash = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
     # -w new opens a new Windows Terminal window; the manager sets its own title.
     subprocess.Popen(
-        ["wt.exe", "-w", "new", "pwsh", "-NoExit", "-Command", f'python "{dash}"'],
+        ["wt.exe", "-w", "new", "pwsh", "-NoExit", "-Command", "claudetop"],
         creationflags=0x00000008,  # DETACHED_PROCESS
     )
 

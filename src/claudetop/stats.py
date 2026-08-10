@@ -31,8 +31,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import paths
-import pricing
+from . import paths
+from . import pricing
 
 PROJECTS_DIR = paths.CLAUDE_HOME / "projects"
 CACHE_VERSION = 1

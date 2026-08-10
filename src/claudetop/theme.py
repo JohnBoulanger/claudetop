@@ -11,7 +11,7 @@ Any key in PRESETS["espresso"] can be overridden. Unknown keys are ignored, so
 a config written for a newer version still loads.
 """
 
-import paths
+from . import paths
 
 # Claude Desktop dark palette — warm espresso, off-white, restrained terracotta.
 ESPRESSO = {

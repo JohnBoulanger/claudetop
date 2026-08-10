@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-import paths
+from . import paths
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"

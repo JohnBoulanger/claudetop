@@ -33,14 +33,14 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Static, Tree
 
-import paths
-import pricing
-import stats
-import theme
-import usage
-import widgets
-import winfocus
-import worktrees
+from . import paths
+from . import pricing
+from . import stats
+from . import theme
+from . import usage
+from . import widgets
+from . import focus as winfocus
+from . import worktrees
 
 CONFIG = paths.load_config()
 PALETTE = theme.load(CONFIG)
@@ -636,8 +636,8 @@ class SessionDashboard(App):
 
     def _focus_window(self, name):
         if not winfocus.available():
-            self.notify("Window focus needs pywin32 (pip install pywin32)",
-                        severity="warning")
+            self.notify("Window focus is only wired up for Windows (pywin32) "
+                        "and macOS (Terminal / iTerm2)", severity="warning")
             return
         if not name or name == "(unnamed)":
             self.notify("Session has no title to match on", severity="warning")
