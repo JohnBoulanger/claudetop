@@ -815,21 +815,19 @@ class SessionDashboard(App):
         """Tell the starfield what the machine is doing.
 
         Drift speed comes from how many sessions are working and how fast
-        money is going out; the comet and tide come from the 5h limit; and a
-        state change since the last tick throws a meteor."""
+        money is going out; the tide comes from the 5h limit; and a state
+        change since the last tick throws a meteor."""
         busy = sum(1 for r in rows if r["status"] in ("busy", "blocked"))
         burn = (summary or {}).get("burn", {}).get("now", 0.0)
         SKY.set_activity(busy, burn)
 
         five = next((w for w in u["windows"] if w["label"].startswith("5h")), None)
         if five:
-            elapsed = None
             if five["resets_in"] is not None:
-                elapsed = max(0.0, min(1.0, (5 * 3600 - five["resets_in"]) / (5 * 3600)))
                 # While we have the reset time, line the 5h spend window up
                 # with the real billing block.
                 stats.set_five_hour_start(time.time() + five["resets_in"] - 5 * 3600)
-            SKY.set_limit(five["pct"], elapsed)
+            SKY.set_limit(five["pct"])
 
         jobs = [j for js in by_parent.values() for j in js] + list(detached)
         for j in jobs:

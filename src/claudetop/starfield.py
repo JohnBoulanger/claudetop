@@ -14,8 +14,6 @@ What the sky is telling you:
                 busy sessions pull the stars into visible motion.
   meteors       events. Green when a background job finishes, red when a
                 session starts waiting on you, terracotta on a new prompt.
-  comet         the 5h limit window. It crosses the sky once per window, so
-                its position is how long you have until the limit resets.
   tide          5h utilization, as a glow along the bottom. It turns red
                 past 90%.
 """
@@ -31,7 +29,6 @@ BUSY_DENSITY_MULT = 2.6  # flat out: this many times as many stars
 FPS = 8
 
 METEOR_GLYPHS = {(1, 1): "╲", (-1, 1): "╱", (1, -1): "╱", (-1, -1): "╲"}
-COMET_TAIL = "····"
 
 
 class Meteor:
@@ -70,8 +67,7 @@ class StarModel:
         self.base_count = 0
         self.meteors = []
         self.warp = 0.0          # 0 = still, 1 = busy
-        self.limit_pct = None    # 5h utilization
-        self.limit_frac = None   # how far through the 5h window we are
+        self.limit_pct = None    # 5h utilization, drives the tide
         self._last = time.time()
 
     # ----------------------------------------------------------- geometry
@@ -113,9 +109,8 @@ class StarModel:
         by_burn = min(1.0, (burn_per_hour or 0.0) / 60.0)
         self.warp = max(by_count, by_burn * 0.8)
 
-    def set_limit(self, pct, elapsed_fraction):
+    def set_limit(self, pct, elapsed_fraction=None):
         self.limit_pct = pct
-        self.limit_frac = elapsed_fraction
 
     def emit(self, kind):
         """kind: 'done' | 'blocked' | 'prompt'."""
@@ -182,9 +177,9 @@ class StarModel:
     def frame(self, dim=False):
         """{(x, y): (glyph, color)} — everything in the sky this frame.
 
-        dim only dims the *stars*. The comet, the tide and the meteors are
-        signals rather than texture, and the panels cover most of the screen —
-        if they were dropped here they would never be seen at all.
+        dim only dims the *stars*. The tide and the meteors are signals
+        rather than texture, and the panels cover most of the screen — if they
+        were dropped here they would never be seen at all.
         """
         out = {}
         for (x, y), (glyph, b, special) in self._star_cells().items():
@@ -192,25 +187,12 @@ class StarModel:
 
         for (x, y, glyph, color) in self._tide_cells():
             out[(x, y)] = (glyph, color)
-        for (x, y, glyph, color) in self._comet_cells():
-            out[(x, y)] = (glyph, color)
         for m in self.meteors:
             for (x, y, glyph, fade) in m.cells():
                 if 0 <= x < self.w and 0 <= y < self.h and fade > 0.2:
                     out[(x, y)] = (glyph, m.color if fade > 0.6
                                    else self.p["faint"])
         return out
-
-    def _comet_cells(self):
-        """One pass across the sky per 5h window: an ambient reset countdown."""
-        if self.limit_frac is None or not self.w or self.h < 4:
-            return []
-        x = int(self.limit_frac * (self.w - 1))
-        y = 1 + int((math.sin(self.limit_frac * math.pi) * (self.h - 4)) * 0.25)
-        cells = [(x, y, "☄", self.p["star"])]
-        for i, ch in enumerate(COMET_TAIL, start=1):
-            cells.append((x - i, y, ch, self.p["faint"]))
-        return [(cx, cy, g, c) for cx, cy, g, c in cells if 0 <= cx < self.w]
 
     def _tide_cells(self):
         """A glow along the bottom whose height tracks the 5h limit."""
