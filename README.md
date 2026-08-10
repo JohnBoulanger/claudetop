@@ -118,7 +118,10 @@ yourself:
   "usage_api": true,
   "usage_poll_seconds": 60,
   "stats_retention_days": 31,
-  "hide_costs": false
+  "hide_costs": false,
+  "work_days": [0, 1, 2, 3, 4],
+  "work_blocks_per_day": 2,
+  "work_start_hour": 9
 }
 ```
 
@@ -132,6 +135,20 @@ Colors are compiled into the Textual stylesheet at startup, so a theme change
 lands on the next launch; the settings screen marks those options with a `*`.
 Older configs naming `espresso` or `espresso-warm` still load — they are the
 same palettes as `black` and `warm`.
+
+### Weekly projection
+
+The 5h projection is a straight line through the block, which is right — a 5h
+window is one sitting. The weekly one is not: a wall-clock extrapolation counts
+Saturday night as burn time and always reads high.
+
+So the weekly window is paced against *working* hours. `work_days` (Monday is
+0), `work_blocks_per_day` (a block is one 5h window) and `work_start_hour`
+describe your week — the default is five days of two blocks from 09:00, so 50
+working hours. The panel shows what it assumed: `at 6 of 50 working hours`. The
+"hits 100% in" estimate walks the same calendar forward, so it lands on a
+working afternoon rather than in the middle of a Sunday night. Both are
+editable in `ctrl+s`.
 
 `claudetop --paths` prints the config and cache locations.
 

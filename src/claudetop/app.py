@@ -509,6 +509,13 @@ class SettingsScreen(ModalScreen):
          lambda v: f"every {v}s", False),
         ("stats_retention_days", "Keep detail", [7, 14, 31, 60, 90],
          lambda v: f"{v} days", False),
+        # These two pace the weekly projection: how much of the week you
+        # actually work, and how hard.
+        ("work_days", "Work week",
+         [[0, 1, 2, 3, 4], [0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5, 6], [0, 2, 4]],
+         lambda v: f"{len(v)} days/wk", True),
+        ("work_blocks_per_day", "Blocks a day", [1, 2, 3, 4],
+         lambda v: f"{v} x 5h", True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -931,19 +938,36 @@ class SessionDashboard(App):
                       if w["resets_in"] is not None else None)
             lines.append(widgets.gauge_row(w["label"], w["pct"], width, PALETTE,
                                            suffix=suffix))
-            span = 5 * 3600 if w["label"].startswith("5h") else 7 * 86400
             if w["resets_in"] is None:
                 continue
-            elapsed = max(0.0, min(1.0, (span - w["resets_in"]) / span))
-            proj = usage.projected(w, elapsed)
             note = Text(f"{'':<13}", style=DIM)
-            if proj is not None:
-                note.append(f"projected ~{proj:.0f}% by reset",
-                            style=RED if proj >= 100 else DIM)
-            hit = self._time_to_limit(w)
+            weekly = not w["label"].startswith("5h")
+            if weekly:
+                # A weekly window spans nights and weekends you do not work
+                # through, so pace it against working hours instead of the
+                # wall clock — otherwise every Monday reads like a blowout.
+                shaped = usage.project_weekly(w, CONFIG)
+                if shaped:
+                    proj, done_h, all_h = shaped
+                    note.append(f"projected ~{proj:.0f}% by reset",
+                                style=RED if proj >= 100 else DIM)
+                    note.append(f"  at {done_h:.0f} of {all_h:.0f} working hours",
+                                style=FAINT)
+                hit = usage.weekly_time_to_limit(w, CONFIG)
+            else:
+                span = 5 * 3600
+                elapsed = max(0.0, min(1.0, (span - w["resets_in"]) / span))
+                proj = usage.projected(w, elapsed)
+                if proj is not None:
+                    note.append(f"projected ~{proj:.0f}% by reset",
+                                style=RED if proj >= 100 else DIM)
+                hit = self._time_to_limit(w)
             if hit is not None:
                 note.append(f"   hits 100% in {widgets.duration(hit)}", style=RED)
             if note.cell_len > 13:
+                # On a narrow terminal this line would otherwise push the
+                # panel border out rather than wrap.
+                note.truncate(width, overflow="ellipsis")
                 lines.append(note)
         if u["credits"] and u["credits"].get("used_dollars") is not None:
             lines.append(widgets.leader(
@@ -975,7 +999,9 @@ class SessionDashboard(App):
         rate.append(f"{widgets.money(burn['now'], hide)}/hr", style=ACCENT)
         rate.append("  now vs  ", style=FAINT)
         rate.append(f"{widgets.money(burn['avg_7d'], hide)}/hr", style=DIM)
-        rate.append(" average working hour this week", style=FAINT)
+        tail = " average working hour this week"
+        rate.append(tail if rate.cell_len + len(tail) <= width else " avg",
+                    style=FAINT)
         lines.append(rate)
         return lines
 
@@ -1077,12 +1103,21 @@ class SessionDashboard(App):
                 t.append("○ ", style=DIM)
                 state = "idle"
                 state_style = FAINT
-            t.append(f"{self._truncate(r['name'], 24):<24} ", style=TEXT)
+            # Columns shrink before the row is allowed to outgrow the panel:
+            # the name and branch give up their space first.
+            spare = max(0, width - 2 - 14 - 12 - 8)
+            name_w = max(10, int(spare * 0.55))
+            branch_w = max(0, spare - name_w)
+            t.append(f"{self._truncate(r['name'], name_w):<{name_w}} ", style=TEXT)
             t.append(f"{state:<14}", style=state_style)
-            t.append(f"{self._truncate(r.get('branch') or '-', 22):<22} ", style=DIM)
+            if branch_w:
+                t.append(f"{self._truncate(r.get('branch') or '-', branch_w):<{branch_w}} ",
+                         style=DIM)
             t.append(f"{widgets.money(r.get('cost'), self._hide_costs):>10}  ",
                      style=DIM)
             t.append(fmt_uptime(r.get("started_at")), style=FAINT)
+            if t.cell_len > width:
+                t.truncate(width, overflow="ellipsis")
             lines.append(t)
         if len(rows) > 6:
             lines.append(Text(f"+{len(rows) - 6} more — press s", style=FAINT))
@@ -1144,23 +1179,31 @@ class SessionDashboard(App):
             return
 
         w = s["windows"]
-        col = 14
-        head = Text(f"{'':<18}", style=DIM)
+        # Three value columns plus a label column, inside whatever room the
+        # panel has; on a narrow terminal the columns tighten rather than
+        # spilling past the border.
+        label_w = min(18, max(10, inner - 3 * 8))
+        col = max(7, min(14, (inner - label_w) // 3))
+        head = Text(f"{'':<{label_w}}", style=DIM)
         for name in ("today", "7d", "30d"):
             head.append(f"{name:>{col}}", style=f"bold {DIM}")
         activity = [head]
         for label, key in (("Messages", "msgs"), ("Sessions", "sessions"),
                            ("Tool calls", "tools"), ("Prompts", "prompts"),
                            ("Files touched", "files")):
-            t = Text(f"{label:<18}", style=TEXT)
+            t = Text(f"{self._truncate(label, label_w):<{label_w}}", style=TEXT)
             for name in ("today", "7d", "30d"):
                 t.append(f"{widgets.count(w[name][key]):>{col}}", style=DIM)
             activity.append(t)
-        t = Text(f"{'Tokens in/out':<18}", style=TEXT)
+        t = Text(f"{self._truncate('Tokens in/out', label_w):<{label_w}}", style=TEXT)
         for name in ("today", "7d", "30d"):
             prompt_side = w[name]["in"] + w[name]["cr"] + w[name]["cw"]
-            t.append(f"{widgets.tokens(prompt_side)}/"
-                     f"{widgets.tokens(w[name]['out'])}".rjust(col), style=DIM)
+            cell = f"{widgets.tokens(prompt_side)}/{widgets.tokens(w[name]['out'])}"
+            # This is the one cell that can outgrow its column; drop the
+            # output side rather than run the row past the border.
+            if len(cell) > col:
+                cell = widgets.tokens(prompt_side)
+            t.append(cell.rjust(col)[:col], style=DIM)
         activity.append(t)
         hit = s.get("cache_hit_7d")
         if hit is not None:
@@ -1193,8 +1236,9 @@ class SessionDashboard(App):
         board = []
         for r in s["sessions_today"][:6]:
             label = r["title"] or r["sid"][:8]
+            room = max(8, inner - len(r["project"]) - 18)
             board.append(widgets.leader(
-                f"{self._truncate(label, 34)}  [{r['project']}]",
+                f"{self._truncate(label, room)}  [{r['project']}]",
                 widgets.money(r["cost"], hide), inner, PALETTE))
         if not board:
             board = [Text("nothing yet today", style=FAINT)]

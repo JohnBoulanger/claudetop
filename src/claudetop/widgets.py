@@ -66,6 +66,8 @@ def gauge_row(label, pct, width, palette, label_w=12, suffix=None, color=None):
     t.append(f" {0.0 if pct is None else pct:>5.1f}%", style=color)
     if suffix:
         t.append(f"  {suffix}", style=palette["dim"])
+    if t.cell_len > width:
+        t.truncate(width, overflow="ellipsis")
     return t
 
 
@@ -181,7 +183,9 @@ def linechart(values, height, width, palette, color=None, gutter=9,
     # plot past the panel edge.
     gutter = max(gutter, len(top_tag) + 1, len(zero_tag) + 1)
     n = len(values)
-    cols = max(n, width - gutter)
+    # Never wider than the panel: with more points than columns the series is
+    # sampled down, which is what keeps a 96-point chart inside 60 columns.
+    cols = max(8, width - gutter)
     color = color or palette["accent"]
 
     # Stretch the series across the whole plot area rather than giving each
@@ -254,7 +258,7 @@ def linechart(values, height, width, palette, color=None, gutter=9,
             # Position by fraction, and print the label whole — a tick that
             # reads "Jul" instead of "Jul 28" is worse than a sparser axis.
             start = int(i * cols / len(labels))
-            if start < used:
+            if start < used or start + len(str(lab)) > cols:
                 continue
             row.append(" " * (start - used))
             row.append(str(lab), style=palette["faint"])
