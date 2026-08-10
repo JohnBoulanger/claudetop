@@ -1,6 +1,8 @@
 """Command line entry point: `claudetop`, or `python -m claudetop`."""
 
 import argparse
+import os
+import sys
 
 from . import __version__, paths
 
@@ -25,8 +27,13 @@ def main(argv=None):
         print(paths.write_default_config())
         return 0
 
-    from .app import SessionDashboard  # imported late: it pulls in Textual
-    SessionDashboard().run()
+    from . import app as app_module  # imported late: it pulls in Textual
+    result = app_module.SessionDashboard().run()
+    if result == app_module.RESTART:
+        # ctrl+r. Colours and the stylesheet are frozen at import, so the only
+        # honest restart is a new process; replace this one so the terminal
+        # keeps a single foreground job.
+        os.execv(sys.executable, [sys.executable, "-m", "claudetop"])
     return 0
 
 

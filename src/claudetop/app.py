@@ -63,6 +63,9 @@ STATUS_RANK = {"blocked": 0, "busy": 1, "running": 2, "idle": 3}
 # as a single table; the gap is filled with sky, not whitespace.
 PANEL_GAP = 1
 
+# What App.run() returns when ctrl+r asks for a fresh process.
+RESTART = "restart"
+
 # Palette comes from theme.py: a preset plus any per-key overrides the user put
 # in their claudetop config. Defaults to the warm espresso look.
 BG = PALETTE["bg"]
@@ -566,8 +569,9 @@ class SettingsScreen(ModalScreen):
 
     def _draw(self):
         t = Text(no_wrap=True, overflow="crop")
-        t.append("⚙ Settings\n", style=f"bold {ACCENT}")
-        t.append(f"{paths.config_dir() / paths.CONFIG_FILE}\n\n", style=FAINT)
+        # Plain text, one colour: a glyph here renders as a colour emoji in
+        # most terminals and ignores the palette.
+        t.append("Settings\n\n", style=f"bold {ACCENT}")
 
         for i, (key, label, values, fmt, live) in enumerate(self.OPTIONS):
             selected = i == self._row
@@ -591,7 +595,7 @@ class SettingsScreen(ModalScreen):
                 t.append("\n")
 
         t.append("\n* takes effect on restart\n", style=FAINT)
-        t.append("↑↓ choose   ←→ change   esc close", style=FAINT)
+        t.append("↑↓ choose   ←→ change   ctrl+r restart   esc close", style=FAINT)
         self.query_one("#settings", Static).update(t)
 
 
@@ -610,6 +614,7 @@ class SessionDashboard(App):
         Binding("h", "toggle_costs", "Hide costs"),
         Binding("r", "manual_refresh", "Refresh"),
         Binding("ctrl+s", "settings", "Settings"),
+        Binding("ctrl+r", "restart", "Restart"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -701,6 +706,14 @@ class SessionDashboard(App):
 
     def action_settings(self):
         self.push_screen(SettingsScreen())
+
+    def action_restart(self):
+        """Quit with a flag that makes the entry point re-exec us.
+
+        The palette and the Textual stylesheet are built at import time, so a
+        theme or poll-interval change only lands in a fresh process. Rather
+        than tell you to quit and retype the command, do it here."""
+        self.exit(RESTART)
 
     def refresh_sessions(self):
         self._tick += 1

@@ -30,6 +30,7 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 | `h` | — | Hide every dollar figure, for screen sharing. |
 | `r` | — | Force a refresh. |
 | `ctrl+s` | Settings | Theme, hide-costs, usage polling and cache retention, written straight to the config file. |
+| `ctrl+r` | — | Restart claudetop in place, so a theme or polling change takes effect. |
 | `q` | — | Quit. |
 
 A compact 5h / 7d gauge strip sits under the title in every view, so you never
@@ -111,7 +112,7 @@ yourself:
 
 ```json
 {
-  "theme": { "preset": "espresso", "accent": "#da7756" },
+  "theme": { "preset": "black", "accent": "#da7756" },
   "worktree_root": "C:/eva-wt",
   "worktree_base_dir": "C:/Users/you/turing-analytics",
   "worktree_org": "Your-Org",
@@ -124,12 +125,15 @@ yourself:
 
 Most of this is editable in the app with `ctrl+s`; the file is the full set.
 
-Presets: `espresso` (default, warm on black), `espresso-warm`, `midnight`,
+Presets: `black` (default, terracotta on true black), `warm`, `midnight`,
 `gruvbox`. Any single color in a preset can be overridden by name — `bg`,
 `panel`, `text`, `dim`, `faint`, `accent`, `red`, `green`, `yellow`, `border`,
 `star`. Set `hide_costs` to blank out every dollar figure for screen sharing.
 Colors are compiled into the Textual stylesheet at startup, so a theme change
-lands on the next launch; the settings screen marks which options work that way.
+lands on the next launch; the settings screen marks those options with a `*`,
+and `ctrl+r` restarts in place so you do not have to quit and retype anything.
+Older configs naming `espresso` or `espresso-warm` still load — they are the
+same palettes as `black` and `warm`.
 
 `claudetop --paths` prints the config and cache locations.
 

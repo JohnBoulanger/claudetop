@@ -29,9 +29,11 @@ ESPRESSO = {
 }
 
 PRESETS = {
-    "espresso": ESPRESSO,
+    # Named for what you see, not for a mood: the default is a true-black
+    # background with Claude's terracotta accent.
+    "black": ESPRESSO,
     # The original warm near-black, before the switch to true black.
-    "espresso-warm": {**ESPRESSO, "bg": "#262624", "panel": "#30302e"},
+    "warm": {**ESPRESSO, "bg": "#262624", "panel": "#30302e"},
     # Cooler, higher contrast — closer to openusage's Deep Space.
     "midnight": {
         "bg": "#0C0E16", "panel": "#161928", "text": "#E4E6F0",
@@ -48,19 +50,28 @@ PRESETS = {
     },
 }
 
-DEFAULT_PRESET = "espresso"
+DEFAULT_PRESET = "black"
+
+# Older configs used the previous names; keep them working silently.
+ALIASES = {"espresso": "black", "espresso-warm": "warm"}
+
+
+def resolve(name):
+    name = str(name or DEFAULT_PRESET)
+    name = ALIASES.get(name, name)
+    return name if name in PRESETS else DEFAULT_PRESET
 
 
 def load(cfg=None):
     """Resolve the active palette: preset, then per-key overrides."""
     cfg = cfg if cfg is not None else paths.load_config()
     over = dict(cfg.get("theme") or {})
-    name = str(over.pop("preset", DEFAULT_PRESET) or DEFAULT_PRESET)
-    palette = dict(PRESETS.get(name, PRESETS[DEFAULT_PRESET]))
+    name = resolve(over.pop("preset", DEFAULT_PRESET))
+    palette = dict(PRESETS[name])
     for k, v in over.items():
         if k in palette and isinstance(v, str) and v.strip():
             palette[k] = v.strip()
-    palette["name"] = name if name in PRESETS else DEFAULT_PRESET
+    palette["name"] = name
     return palette
 
 
@@ -71,7 +82,7 @@ def preset_names():
 def next_preset(current):
     names = preset_names()
     try:
-        i = names.index(current)
+        i = names.index(resolve(current))
     except ValueError:
         i = -1
     return names[(i + 1) % len(names)]
