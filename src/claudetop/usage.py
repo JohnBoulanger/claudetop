@@ -103,14 +103,18 @@ def fetch(timeout=HTTP_TIMEOUT):
     except urllib.error.HTTPError as e:
         detail = ""
         try:
-            detail = e.read(256).decode("utf-8", "replace").strip()
+            # Error bodies are pretty-printed JSON; flatten so the message
+            # stays one line and cannot break a panel border.
+            detail = " ".join(e.read(256).decode("utf-8", "replace").split())
         except OSError:
             pass
         if e.code in (401, 403):
-            return None, "usage API rejected the token (401) — is Claude Code logged in?"
-        return None, f"usage API returned {e.code} {detail}"[:120]
+            return None, "usage API rejected the token — is Claude Code logged in?"
+        if e.code == 429:
+            return None, "usage API rate limited — backing off"
+        return None, f"usage API returned {e.code} {detail}"[:110]
     except (urllib.error.URLError, OSError, ValueError) as e:
-        return None, f"usage API unreachable: {e}"[:120]
+        return None, " ".join(f"usage API unreachable: {e}".split())[:110]
     try:
         return json.loads(body), None
     except (json.JSONDecodeError, ValueError):
@@ -237,6 +241,33 @@ def snapshot():
     return data
 
 
+CACHE_NAME = "usage.json"
+
+
+def _cache_path():
+    return paths.cache_dir() / CACHE_NAME
+
+
+def _load_cached():
+    """Last good payload, so a cold start (or a rate limit) still has numbers."""
+    try:
+        raw = json.loads(_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None, 0.0
+    if not isinstance(raw, dict):
+        return None, 0.0
+    return raw.get("payload"), float(raw.get("fetched_at") or 0.0)
+
+
+def _save_cached(payload):
+    path = paths.ensure(paths.cache_dir()) / CACHE_NAME
+    try:
+        path.write_text(json.dumps({"fetched_at": time.time(),
+                                    "payload": payload}), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def start_background(poll_seconds=60, enabled=True):
     """Start the single usage-API poller (idempotent)."""
     global _worker_started
@@ -249,6 +280,13 @@ def start_background(poll_seconds=60, enabled=True):
             _state.update(loading=False, error="usage API disabled in config")
         return
 
+    cached, when = _load_cached()
+    if cached:
+        with _state_lock:
+            _state.update(shape(cached))
+            _state["fetched_at"] = when
+            _state["loading"] = False
+
     def loop():
         while True:
             payload, err = fetch()
@@ -258,8 +296,16 @@ def start_background(poll_seconds=60, enabled=True):
                 if payload is not None:
                     _state.update(shape(payload))
                     _state["fetched_at"] = time.time()
-            # A failed poll backs off so a logged-out machine is not hammered.
-            time.sleep(poll_seconds if err is None else max(poll_seconds, 120))
+                    _save_cached(payload)
+            # A failed poll backs off so a logged-out machine is not hammered,
+            # and a rate limit backs off hard — the numbers move slowly anyway.
+            if err is None:
+                delay = poll_seconds
+            elif "rate limited" in err:
+                delay = max(poll_seconds, 300)
+            else:
+                delay = max(poll_seconds, 120)
+            time.sleep(delay)
 
     threading.Thread(target=loop, name="usage-poll", daemon=True).start()
 

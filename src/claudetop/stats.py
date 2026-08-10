@@ -28,14 +28,14 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 from . import paths
 from . import pricing
 
 PROJECTS_DIR = paths.CLAUDE_HOME / "projects"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_NAME = "transcripts.json"
 
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
@@ -55,18 +55,38 @@ def _ts(o):
         return None
 
 
+def _tool_name(name):
+    """MCP tools are namespaced to death; keep the last, meaningful segment."""
+    if name.startswith("mcp__"):
+        return name.split("__")[-1]
+    return name
+
+
 def _blank_entry(path: Path):
     return {
         "size": 0, "mtime": 0.0, "offset": 0,
         "sid": path.stem, "project": path.parent.name,
+        "cwd": None,     # real working directory, for a readable project name
+        "title": None,   # the session's ai-title, for the leaderboard
         "first_ts": None, "last_ts": None,
         "totals": {"msgs": 0, "tools": 0, "prompts": 0,
                    "in": 0, "out": 0, "cr": 0, "cw": 0, "by_model": {}},
         "events": [],    # [ts, model, in, out, cr, cw, tools, files]
         "prompts": [],   # [ts, ...]
         "files": [],     # [[ts, path], ...]
+        "tools": [],     # [[ts, tool name], ...]
         "ids": [],
     }
+
+
+def project_name(entry):
+    """A short, human name for the repo a session ran in."""
+    cwd = entry.get("cwd")
+    if cwd:
+        parts = str(cwd).replace("\\", "/").rstrip("/").split("/")
+        if parts and parts[-1]:
+            return parts[-1]
+    return entry.get("project") or "?"
 
 
 def _consume(entry, chunk):
@@ -76,9 +96,10 @@ def _consume(entry, chunk):
     order = list(entry["ids"])
 
     for raw in chunk:
-        # Cheap prefilter — most lines are neither, and json.loads dominates
-        # the cost of a full corpus scan.
-        if '"usage"' not in raw and '"user"' not in raw:
+        # Cheap prefilter — most lines are none of these, and json.loads
+        # dominates the cost of a full corpus scan.
+        if ('"usage"' not in raw and '"user"' not in raw
+                and '"aiTitle"' not in raw and '"lastPrompt"' not in raw):
             continue
         try:
             o = json.loads(raw)
@@ -88,6 +109,12 @@ def _consume(entry, chunk):
             continue
         kind = o.get("type")
         ts = _ts(o)
+        if o.get("cwd") and not entry["cwd"]:
+            entry["cwd"] = o["cwd"]
+        if kind in ("ai-title", "last-prompt"):
+            entry["title"] = (o.get("aiTitle") or o.get("slug")
+                              or o.get("lastPrompt") or entry["title"])
+            continue
         if ts:
             entry["first_ts"] = ts if entry["first_ts"] is None else min(entry["first_ts"], ts)
             entry["last_ts"] = ts if entry["last_ts"] is None else max(entry["last_ts"], ts)
@@ -121,7 +148,10 @@ def _consume(entry, chunk):
                 if not isinstance(b, dict) or b.get("type") != "tool_use":
                     continue
                 tools += 1
-                if b.get("name") in EDIT_TOOLS:
+                name = b.get("name") or "?"
+                if ts:
+                    entry["tools"].append([round(ts, 1), _tool_name(name)])
+                if name in EDIT_TOOLS:
                     inp = b.get("input") or {}
                     fp = inp.get("file_path") or inp.get("notebook_path")
                     if fp:
@@ -208,6 +238,7 @@ def _prune(entry, cutoff):
     entry["events"] = [e for e in entry["events"] if e[0] >= cutoff]
     entry["prompts"] = [t for t in entry["prompts"] if t >= cutoff]
     entry["files"] = [f for f in entry["files"] if f[0] >= cutoff]
+    entry["tools"] = [t for t in entry["tools"] if t[0] >= cutoff]
 
 
 # ------------------------------------------------------------------- cache
@@ -269,6 +300,14 @@ def summarize(files, now=None, five_hour_start=None):
     sessions = {k: set() for k in windows}
     touched = {k: set() for k in windows}
     by_model = {"30d": {}, "all": {}}
+    by_project = {}          # 30d cost per repo
+    by_tool = {}             # 30d call count per tool
+    per_session_today = {}   # today's cost per transcript, for the leaderboard
+    hourly = [0.0] * 24      # last 24 hours, oldest first
+    daily = [0.0] * 14       # last 14 local days, oldest first
+    recent_hour = 0.0        # cost in the last 60 minutes -> burn rate
+    hour0 = now - 24 * 3600
+    day0 = local_midnight - 13 * 86400
 
     for path, entry in files.items():
         tot = entry.get("totals") or {}
@@ -289,14 +328,19 @@ def summarize(files, now=None, five_hour_start=None):
             allw["cost"] += pricing.cost(model, m.get("in", 0), m.get("out", 0),
                                          m.get("cr", 0), m.get("cw", 0))
 
+        proj = project_name(entry)
         for ts, model, tin, tout, tcr, tcw, tools, nfiles in entry.get("events", []):
-            c = None
+            c = pricing.cost(model, tin, tout, tcr, tcw)
+            if ts >= hour0:
+                hourly[min(23, int((ts - hour0) // 3600))] += c
+            if ts >= day0:
+                daily[min(13, int((ts - day0) // 86400))] += c
+            if ts >= now - 3600:
+                recent_hour += c
             for key, start in bounds.items():
                 if ts < start:
                     continue
                 w = windows[key]
-                if c is None:
-                    c = pricing.cost(model, tin, tout, tcr, tcw)
                 w["cost"] += c
                 w["in"] += tin
                 w["out"] += tout
@@ -311,6 +355,19 @@ def summarize(files, now=None, five_hour_start=None):
                     acc["msgs"] += 1
                     acc["tokens"] += tin + tout + tcr + tcw
                     acc["cost"] += c
+                    pacc = by_project.setdefault(
+                        proj, {"cost": 0.0, "msgs": 0, "sessions": set()})
+                    pacc["cost"] += c
+                    pacc["msgs"] += 1
+                    pacc["sessions"].add(path)
+                if key == "today":
+                    sess = per_session_today.setdefault(path, {
+                        "cost": 0.0, "msgs": 0, "project": proj,
+                        "title": entry.get("title"), "sid": entry.get("sid"),
+                        "last_ts": 0.0})
+                    sess["cost"] += c
+                    sess["msgs"] += 1
+                    sess["last_ts"] = max(sess["last_ts"], ts)
 
         for ts in entry.get("prompts", []):
             for key, start in bounds.items():
@@ -320,6 +377,9 @@ def summarize(files, now=None, five_hour_start=None):
             for key, start in bounds.items():
                 if ts >= start:
                     touched[key].add(fp)
+        for ts, tool in entry.get("tools", []):
+            if ts >= bounds["30d"]:
+                by_tool[tool] = by_tool.get(tool, 0) + 1
 
     for key, w in windows.items():
         w["sessions"] = len(sessions[key])
@@ -338,12 +398,42 @@ def summarize(files, now=None, five_hour_start=None):
         rows.sort(key=lambda r: r["cost"], reverse=True)
         return rows
 
+    projects = [{"project": k, "cost": v["cost"], "msgs": v["msgs"],
+                 "sessions": len(v["sessions"])} for k, v in by_project.items()]
+    projects.sort(key=lambda r: r["cost"], reverse=True)
+
+    tools = [{"tool": k, "calls": v} for k, v in by_tool.items()]
+    tools.sort(key=lambda r: r["calls"], reverse=True)
+
+    leaderboard = sorted(per_session_today.values(),
+                         key=lambda r: r["cost"], reverse=True)
+
+    # Burn rate: the last hour against the average working hour of the past
+    # week. "Hours worked" counts only hours that saw a message, so an
+    # overnight gap does not flatter the average.
+    active_hours = sum(1 for v in hourly if v > 0)
+    week_hours = max(1, len({int(e[0] // 3600)
+                             for entry in files.values()
+                             for e in entry.get("events", [])
+                             if e[0] >= now - 7 * 86400}))
+    burn = {
+        "now": recent_hour,
+        "avg_7d": windows["7d"]["cost"] / week_hours,
+        "today_active_hours": active_hours,
+    }
+
     return {
         "windows": windows,
         "cache_hit_7d": cache_hit(windows["7d"]),
         "cache_hit_today": cache_hit(windows["today"]),
         "by_model_30d": model_rows(by_model["30d"]),
         "by_model_all": model_rows(by_model["all"]),
+        "by_project_30d": projects,
+        "by_tool_30d": tools,
+        "sessions_today": leaderboard,
+        "hourly_24h": hourly,
+        "daily_14d": daily,
+        "burn": burn,
         "transcripts": len(files),
     }
 

@@ -18,16 +18,41 @@ or writes to a session.
 
 ## Views
 
+The home view is the usage page: limits, spend and what is running right now.
+Every other view is a toggle — the same key, or `esc`, brings you home.
+
 | Key | View | What it shows |
 |-----|------|---------------|
-| — | Sessions | Every live session and background job, with status, branch, cost and uptime. The starfield lives here. |
+| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, 24h and 14d spend charts, and the live session strip. |
+| `s` | Sessions | Every live session and background job, with status, branch, cost and uptime. |
 | `t` | Tree | Sessions with their background jobs nested underneath. Collapse with `←`. |
 | `w` | Worktrees | Ticket worktrees: branch, clean/dirty, ahead/behind, PR state. Needs `worktree_root` in the config. |
-| `u` | Usage | 5h / 7d limit gauges, spend by window, per-model breakdown, activity counters, cache hit rate. |
+| `a` | Analytics | Activity counters, cache hit rate, cost by model, cost by repo, most-used tools, and today's most expensive sessions. |
+| `m` | Star map | Sessions drawn as a constellation, each with its background jobs orbiting it. |
 | `f` | — | Focus the selected session's terminal window. |
+| `h` | — | Hide every dollar figure, for screen sharing. |
 | `r` | — | Force a refresh. |
 | `T` | — | Cycle the color preset (applies on next launch). |
 | `q` | — | Quit. |
+
+A compact 5h / 7d gauge strip sits under the title in every view, so you never
+have to leave a view to check where you are against the limits.
+
+## The sky
+
+The starfield fills the background of every view, and it is not just
+decoration — it is a second, ambient read on the same data:
+
+| What you see | What it means |
+|--------------|---------------|
+| Stars drifting | Live burn rate. An idle machine has a still field; several busy sessions pull it into visible motion. |
+| A meteor | An event just happened — green for a background job finishing, red for a session that needs your input, terracotta for a new prompt. |
+| The comet | Your 5h limit window. It crosses the sky once per window, so its position is your time to reset. |
+| The tide along the bottom | 5h utilization. It rises as you spend and turns red past 90%. |
+
+Textual cannot show a lower layer through an upper widget's cells, so the
+panels paint their own dimmed stars in the gaps between text. That keeps the
+field continuous across a panel edge while leaving the text readable.
 
 ## Install
 
@@ -55,9 +80,13 @@ normally.
 
 | Panel | Source | Network |
 |-------|--------|---------|
-| Sessions, jobs | `~/.claude/sessions/*.json`, `~/.claude/daemon/roster.json`, `~/.claude/jobs/*/state.json` | none |
-| Spend, activity, cache hit | `~/.claude/projects/**/*.jsonl` transcripts | none |
+| Sessions, jobs, star map | `~/.claude/sessions/*.json`, `~/.claude/daemon/roster.json`, `~/.claude/jobs/*/state.json` | none |
+| Spend, burn rate, activity, cache hit, tools, repos | `~/.claude/projects/**/*.jsonl` transcripts | none |
 | 5h / 7d limits, extra-usage credits | `GET https://api.anthropic.com/api/oauth/usage` | one call per minute |
+
+The last good limits response is cached on disk, so a cold start still shows
+numbers while the first call is in flight — or while the API is rate limiting
+you. Stale figures are labelled as such rather than silently shown as current.
 
 The usage call reuses the OAuth token Claude Code already holds
 (`~/.claude/.credentials.json`, or the login keychain on macOS). Nothing is sent

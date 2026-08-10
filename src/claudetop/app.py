@@ -16,17 +16,12 @@ Run:  python dashboard.py
 """
 
 import json
-import math
 import os
-import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
-from rich import box
-from rich.console import Group
-from rich.panel import Panel
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -35,6 +30,7 @@ from textual.widgets import DataTable, Footer, Static, Tree
 
 from . import paths
 from . import pricing
+from . import starfield
 from . import stats
 from . import theme
 from . import usage
@@ -85,18 +81,45 @@ STAR_GLYPHS = ["·", "·", "·", ".", "✦", "✧", "+"]
 STAR_SOFT = PALETTE["star"]  # brightest ordinary star, never pure white
 
 CSS = f"""
+/* The sky is a full-screen layer underneath everything. Any widget that
+   paints an opaque background hides it, which is why the panel-based views
+   draw their own dimmed stars instead (see widgets.starred_panel). */
 Screen {{
     background: {BG};
     color: {TEXT};
+    layers: stars content;
+}}
+
+#stars {{
+    layer: stars;
+    position: absolute;
+    offset: 0 0;
+    width: 100%;
+    height: 100%;
+    background: {BG};
+    color: {DIM};
+}}
+
+#banner, #subtitle, #limit-strip, #home, #analytics, #map,
+#table, #tree, #wt-table, Footer {{
+    layer: content;
 }}
 
 #banner {{
     padding: 1 2 0 2;
+    background: {BG};
 }}
 
 #subtitle {{
     color: {DIM};
+    padding: 0 2 0 2;
+    background: {BG};
+}}
+
+#limit-strip {{
     padding: 0 2 1 2;
+    background: {BG};
+    height: auto;
 }}
 
 DataTable, Tree {{
@@ -108,20 +131,18 @@ DataTable, Tree {{
     max-height: 75%;    /* beyond this the table scrolls, art keeps its floor */
 }}
 
-#usage {{
+#home, #map {{
+    background: {BG};
+    color: {TEXT};
+    height: 1fr;
+}}
+
+#analytics {{
     background: {BG};
     color: {TEXT};
     margin: 0 1 1 1;
     height: 1fr;        /* the panels scroll inside this */
     scrollbar-size: 1 1;
-}}
-
-#stars {{
-    height: 1fr;        /* soak up whatever space the table leaves */
-    min-height: 4;      /* ...but never vanish entirely */
-    margin: 0 1 0 1;
-    background: {BG};
-    color: {DIM};
 }}
 
 DataTable > .datatable--header {{
@@ -421,82 +442,50 @@ def fmt_cost(c):
     return f"${c:.2f}"
 
 
-class StarField(Static):
-    """A subtle, self-contained twinkling starfield.
+SKY = starfield.StarModel(PALETTE)
 
-    Each star sits at a fixed cell and slowly breathes in/out on a sine phase.
-    Most are dim and below the visibility threshold at any instant, so the field
-    stays quiet — only a few points glimmer at a time. A small fraction are ✻
-    sparkles that warm to terracotta at their peak. No assets, no external loop.
+
+class StarField(Static):
+    """The sky, on the bottom layer, filling the whole screen.
+
+    It owns the animation clock: it is the only thing that calls SKY.tick(),
+    so the panels that paint their own dimmed stars stay in step with it
+    instead of running the simulation twice as fast.
     """
 
-    FPS = 8
-    DENSITY = 48  # roughly one star per N cells — sparse on purpose
+    FPS = starfield.FPS
 
     def on_mount(self):
-        self._w = 0
-        self._h = 0
-        self._stars = []
         self.set_interval(1 / self.FPS, self._tick)
 
-    def _rebuild_stars(self):
-        w, h = self._w, self._h
-        count = max(1, (w * h) // self.DENSITY)
-        self._stars = []
-        for _ in range(count):
-            special = random.random() < 0.14  # ~1 in 7 is a ✻ sparkle
-            self._stars.append({
-                "x": random.randrange(w),
-                "y": random.randrange(h),
-                "phase": random.uniform(0, math.tau),
-                "rate": random.uniform(0.04, 0.12),   # slow, gentle twinkle
-                "amp": random.uniform(0.45, 0.85),
-                "glyph": "✻" if special else random.choice(STAR_GLYPHS),
-                "special": special,
-            })
-
-    def _resize_if_needed(self):
-        w = max(0, self.size.width)
-        h = max(0, self.size.height)
-        if w != self._w or h != self._h:
-            self._w, self._h = w, h
-            if w and h:
-                self._rebuild_stars()
-
-    def _build(self):
-        grid = [[None] * self._w for _ in range(self._h)]
-        for s in self._stars:
-            s["phase"] += s["rate"]
-            b = (math.sin(s["phase"]) + 1.0) * 0.5 * s["amp"]
-            if b < 0.30:  # most of the time, a given star is simply dark
-                continue
-            if s["special"] and b >= 0.72:
-                color = ACCENT
-            elif b >= 0.68:
-                color = STAR_SOFT
-            elif b >= 0.46:
-                color = DIM
-            else:
-                color = FAINT
-            grid[s["y"]][s["x"]] = (s["glyph"], color)
-
-        t = Text()
-        for y in range(self._h):
-            for x in range(self._w):
-                cell = grid[y][x]
-                if cell:
-                    t.append(cell[0], style=cell[1])
-                else:
-                    t.append(" ")
-            if y < self._h - 1:
-                t.append("\n")
-        return t
-
     def _tick(self):
-        self._resize_if_needed()
-        if not self._w or not self._h:
+        w, h = max(0, self.size.width), max(0, self.size.height)
+        if not w or not h:
             return
-        self.update(self._build())
+        SKY.resize(w, h)
+        SKY.tick()
+        cells = SKY.frame()
+        # The sky is sparse, so emit runs of blank cells in one append rather
+        # than one per character — a full-screen frame is a few hundred
+        # appends instead of several thousand.
+        by_row = {}
+        for (x, y), cell in cells.items():
+            by_row.setdefault(y, []).append((x, cell))
+        t = Text(no_wrap=True, overflow="crop")
+        for y in range(h):
+            x = 0
+            for sx, (glyph, color) in sorted(by_row.get(y, [])):
+                if sx < x or sx >= w:
+                    continue
+                if sx > x:
+                    t.append(" " * (sx - x))
+                t.append(glyph, style=color)
+                x = sx + 1
+            if x < w:
+                t.append(" " * (w - x))
+            if y < h - 1:
+                t.append("\n")
+        self.update(t)
 
 
 class SessionDashboard(App):
@@ -504,24 +493,31 @@ class SessionDashboard(App):
     TITLE = "Claude Session Manager"
 
     BINDINGS = [
-        Binding("f", "focus_selected", "Focus window"),
-        Binding("t", "toggle_view", "Tree view"),
+        Binding("escape", "go_home", "Home", show=False),
+        Binding("s", "show_sessions", "Sessions"),
+        Binding("t", "toggle_view", "Tree"),
         Binding("w", "toggle_worktrees", "Worktrees"),
-        Binding("u", "toggle_usage", "Usage"),
+        Binding("a", "toggle_analytics", "Analytics"),
+        Binding("m", "toggle_map", "Star map"),
+        Binding("f", "focus_selected", "Focus window"),
+        Binding("h", "toggle_costs", "Hide costs"),
         Binding("r", "manual_refresh", "Refresh"),
         Binding("T", "cycle_theme", "Theme"),
         Binding("q", "quit", "Quit"),
     ]
 
     def compose(self) -> ComposeResult:
+        yield StarField(id="stars")
         yield Static(TITLE_LINE, id="banner")
         yield Static("", id="subtitle")
+        yield Static("", id="limit-strip")
+        yield Static("", id="home")
         yield DataTable(id="table", cursor_type="row")
         yield Tree("Sessions", id="tree")
         yield DataTable(id="wt-table", cursor_type="row")
-        with VerticalScroll(id="usage"):
-            yield Static("", id="usage-body")
-        yield StarField(id="stars")
+        with VerticalScroll(id="analytics"):
+            yield Static("", id="analytics-body")
+        yield Static("", id="map")
         yield Footer()
 
     def on_mount(self):
@@ -540,16 +536,18 @@ class SessionDashboard(App):
             "Ticket", "Repo", "Branch", "Clean", "Ahead/Behind",
             "PR", "Bootstrap",
         )
-        wt_table.display = False
-        self.query_one("#usage").display = False
-
-        self._view_mode = "table"
+        self._view_mode = "home"
         self._selected_key = None
         self._wt_meta = {}
         self._tree_collapsed = set()
-        self._usage_subtitle = ""
-        self._usage_dirty = True
+        self._subtitle = ""
+        self._hide_costs = bool(CONFIG.get("hide_costs"))
+        self._job_states = {}      # for the event meteors
+        self._last_prompts = None
         self._tick = 0
+        for widget_id in ("#table", "#tree", "#wt-table", "#analytics", "#map"):
+            self.query_one(widget_id).display = False
+
         self.refresh_sessions()
         self.set_interval(0.2, self.refresh_sessions)
 
@@ -648,33 +646,45 @@ class SessionDashboard(App):
             self.notify(f"No window titled like “{name}” — is it in its own window?",
                         severity="warning")
 
+    VIEW_WIDGETS = {"home": "#home", "sessions": "#table", "tree": "#tree",
+                    "wt": "#wt-table", "analytics": "#analytics", "map": "#map"}
+
     def _show_view(self, mode):
         self._view_mode = mode
-        for widget_id, active in (("#table", mode == "table"),
-                                  ("#tree", mode == "tree"),
-                                  ("#wt-table", mode == "wt"),
-                                  ("#usage", mode == "usage")):
+        for name, widget_id in self.VIEW_WIDGETS.items():
             w = self.query_one(widget_id)
-            w.display = active
-            if active:
+            w.display = name == mode
+            if name == mode and w.can_focus:
                 w.focus()
-        # The starfield is the main page's floor; the other views want the room.
-        self.query_one("#stars").display = mode == "table"
         self.refresh_sessions()
 
+    def _toggle(self, mode):
+        """Every view key is a toggle back to home, so one key gets you out."""
+        self._show_view("home" if self._view_mode == mode else mode)
+
+    def action_go_home(self):
+        self._show_view("home")
+
+    def action_show_sessions(self):
+        self._toggle("sessions")
+
     def action_toggle_view(self):
-        self._show_view("tree" if self._view_mode != "tree" else "table")
+        self._toggle("tree")
 
     def action_toggle_worktrees(self):
         if self._view_mode != "wt":
             worktrees.start_background()  # idempotent; scans off the UI thread
-            self._show_view("wt")
-        else:
-            self._show_view("table")
+        self._toggle("wt")
 
-    def action_toggle_usage(self):
-        self._usage_dirty = True
-        self._show_view("usage" if self._view_mode != "usage" else "table")
+    def action_toggle_analytics(self):
+        self._toggle("analytics")
+
+    def action_toggle_map(self):
+        self._toggle("map")
+
+    def action_toggle_costs(self):
+        self._hide_costs = not self._hide_costs
+        self.notify("Costs hidden" if self._hide_costs else "Costs shown")
 
     def action_cycle_theme(self):
         name = theme.next_preset(PALETTE.get("name", theme.DEFAULT_PRESET))
@@ -718,24 +728,35 @@ class SessionDashboard(App):
 
         rows.sort(key=lambda r: (STATUS_RANK.get(r["status"], 4), r["name"].lower()))
 
-        if self._view_mode == "table":
+        u = usage.snapshot()
+        st = stats.snapshot()
+        summary = st.get("summary")
+        self._feed_sky(rows, by_parent, detached, u, summary)
+
+        if self._view_mode == "sessions":
             self._render_table(rows)
         elif self._view_mode == "tree":
             self._render_tree(interactive_rows, by_parent, detached, hidden_old_done)
-        elif self._view_mode == "usage":
-            # Panels change slowly (the API polls once a minute), so redraw at
-            # ~2fps instead of on every 0.2s session tick.
-            if self._usage_dirty or self._tick % 5 == 0:
-                self._render_usage()
-        else:
+        elif self._view_mode == "wt":
             self._render_wt()
+        elif self._view_mode == "home":
+            # The panels move slowly, but the sky behind them animates, so the
+            # home view redraws at the star clock rather than the data clock.
+            self._render_home(rows, u, summary)
+        elif self._view_mode == "analytics":
+            if self._tick % 5 == 0:
+                self._render_analytics(summary)
+        elif self._view_mode == "map":
+            self._render_map(interactive_rows, by_parent, detached)
+
+        self._render_limit_strip(u, summary)
 
         total_needing_attention = sum(1 for r in rows if r["status"] == "blocked")
         attn = f" · [b {RED}]{total_needing_attention} need attention[/]" if total_needing_attention else ""
         if self._view_mode == "wt":
             subtitle = self._wt_subtitle + attn
-        elif self._view_mode == "usage":
-            subtitle = self._usage_subtitle + attn
+        elif self._view_mode in ("home", "analytics"):
+            subtitle = self._data_subtitle(st, u) + attn
         else:
             subtitle = f"{len(rows)} session{'s' if len(rows) != 1 else ''} · polling ~/.claude{attn}"
         self.query_one("#subtitle", Static).update(subtitle)
@@ -861,145 +882,417 @@ class SessionDashboard(App):
             parts.append(f"[{FAINT}]scanned {int(age)}s ago[/]")
         self._wt_subtitle = " · ".join(parts) + " · enter focuses the ticket's session"
 
-    # ------------------------------------------------------------- usage view
+    # ------------------------------------------------------- sky integration
 
-    def _panel(self, title, body, color=None):
-        return Panel(body, title=f"[{color or ACCENT}]{title}[/]",
-                     title_align="left", box=box.ROUNDED,
-                     border_style=BORDER, padding=(0, 1))
+    def _feed_sky(self, rows, by_parent, detached, u, summary):
+        """Tell the starfield what the machine is doing.
 
-    def _limits_panel(self, u, width):
-        """Subscription limit gauges, straight from the usage API."""
+        Drift speed comes from how many sessions are working and how fast
+        money is going out; the comet and tide come from the 5h limit; and a
+        state change since the last tick throws a meteor."""
+        busy = sum(1 for r in rows if r["status"] in ("busy", "blocked"))
+        burn = (summary or {}).get("burn", {}).get("now", 0.0)
+        SKY.set_activity(busy, burn)
+
+        five = next((w for w in u["windows"] if w["label"].startswith("5h")), None)
+        if five:
+            elapsed = None
+            if five["resets_in"] is not None:
+                elapsed = max(0.0, min(1.0, (5 * 3600 - five["resets_in"]) / (5 * 3600)))
+                # While we have the reset time, line the 5h spend window up
+                # with the real billing block.
+                stats.set_five_hour_start(time.time() + five["resets_in"] - 5 * 3600)
+            SKY.set_limit(five["pct"], elapsed)
+
+        jobs = [j for js in by_parent.values() for j in js] + list(detached)
+        for j in jobs:
+            key, state = j["daemon_short"], j["state"]
+            was = self._job_states.get(key)
+            if was is not None and was != state:
+                if state == "done":
+                    SKY.emit("done")
+                elif state == "blocked":
+                    SKY.emit("blocked")
+            self._job_states[key] = state
+
+        prompts = (summary or {}).get("windows", {}).get("today", {}).get("prompts")
+        if prompts is not None:
+            if self._last_prompts is not None and prompts > self._last_prompts:
+                SKY.emit("prompt")
+            self._last_prompts = prompts
+
+    def _sky_for(self, widget):
+        """The dimmed sky, in coordinates local to this widget's content."""
+        region = widget.content_region
+        frame = SKY.frame(dim=True)
+        ox, oy = region.x, region.y
+        return {(x - ox, y - oy): v for (x, y), v in frame.items()}, (0, 0)
+
+    def _data_subtitle(self, st, u):
+        parts = []
+        if st.get("building"):
+            done, total = st.get("done", 0), st.get("total", 0)
+            parts.append(f"[{ACCENT}]building transcript cache {done}/{total}[/]")
+        elif st.get("summary"):
+            parts.append(f"{st['summary']['transcripts']} transcripts")
+        if u["fetched_at"]:
+            parts.append(f"[{FAINT}]limits {int(time.time() - u['fetched_at'])}s ago[/]")
+        elif u["error"]:
+            parts.append(f"[{RED}]limits unavailable[/]")
+        if self._hide_costs:
+            parts.append(f"[{ACCENT}]costs hidden[/]")
+        return " · ".join(parts)
+
+    # -------------------------------------------------------- shared pieces
+
+    def _render_limit_strip(self, u, summary):
+        """The one line of limits that stays visible in every view."""
+        strip = self.query_one("#limit-strip", Static)
+        width = max(40, strip.content_size.width or self.size.width - 4)
+        if not u["windows"]:
+            strip.update(Text(u["error"] or "reading usage limits…", style=FAINT))
+            return
+
+        t = Text(no_wrap=True, overflow="crop")
+        for i, w in enumerate(u["windows"][:2]):
+            if i:
+                t.append("   ")
+            t.append(f"{w['label']} ", style=DIM)
+            t.append_text(widgets.gauge(w["pct"], 14, PALETTE))
+            t.append(f" {w['pct']:.0f}%",
+                     style=widgets.gauge_color(w["pct"], PALETTE))
+            if w["resets_in"] is not None:
+                t.append(f" · {widgets.duration(w['resets_in'])}", style=FAINT)
+        burn = (summary or {}).get("burn")
+        if burn and not self._hide_costs:
+            t.append(f"   burn {widgets.money(burn['now'])}/hr", style=DIM)
+            t.append(f" · 7d avg {widgets.money(burn['avg_7d'])}/hr", style=FAINT)
+        pad = max(0, width - t.cell_len)
+        t.append(" " * pad)
+        strip.update(t)
+
+    def _time_to_limit(self, window):
+        """At the current rate, when does this window hit 100%?"""
+        if not window or window["resets_in"] is None or not window["pct"]:
+            return None
+        span = 5 * 3600 if window["label"].startswith("5h") else 7 * 86400
+        elapsed = span - window["resets_in"]
+        if elapsed <= 60:
+            return None
+        rate = window["pct"] / elapsed           # percent per second
+        if rate <= 0:
+            return None
+        remaining = (100.0 - window["pct"]) / rate
+        return None if remaining > window["resets_in"] else remaining
+
+    # ---------------------------------------------------------- home view
+
+    def _limits_lines(self, u, width):
         lines = []
-        if u["loading"]:
+        if u["loading"] and not u["windows"]:
             lines.append(Text("contacting the usage API…", style=FAINT))
         elif u["error"] and not u["windows"]:
-            lines.append(Text(u["error"], style=RED))
-            lines.append(Text("set \"usage_api\": false in the config to hide this",
+            lines.append(Text(self._truncate(u["error"], width), style=RED))
+            lines.append(Text('set "usage_api": false in the config to hide this',
                               style=FAINT))
+        elif u["error"]:
+            # Keep showing the last good numbers, but say they are stale.
+            age = widgets.duration(time.time() - u["fetched_at"]) if u["fetched_at"] else "?"
+            lines.append(Text(self._truncate(f"{u['error']} · showing figures "
+                                             f"from {age} ago", width), style=DIM))
         for w in u["windows"]:
-            suffix = None
-            if w["resets_in"] is not None:
-                suffix = f"resets in {widgets.duration(w['resets_in'])}"
+            suffix = (f"resets in {widgets.duration(w['resets_in'])}"
+                      if w["resets_in"] is not None else None)
             lines.append(widgets.gauge_row(w["label"], w["pct"], width, PALETTE,
                                            suffix=suffix))
-            # How far into the window we are tells us where the current burn
-            # rate lands by reset time.
             span = 5 * 3600 if w["label"].startswith("5h") else 7 * 86400
-            if w["resets_in"] is not None:
-                elapsed = max(0.0, min(1.0, (span - w["resets_in"]) / span))
-                proj = usage.projected(w, elapsed)
-                if proj is not None:
-                    style = RED if proj >= 100 else DIM
-                    lines.append(Text(f"{'':<13}projected ~{proj:.0f}% by reset",
-                                      style=style))
+            if w["resets_in"] is None:
+                continue
+            elapsed = max(0.0, min(1.0, (span - w["resets_in"]) / span))
+            proj = usage.projected(w, elapsed)
+            note = Text(f"{'':<13}", style=DIM)
+            if proj is not None:
+                note.append(f"projected ~{proj:.0f}% by reset",
+                            style=RED if proj >= 100 else DIM)
+            hit = self._time_to_limit(w)
+            if hit is not None:
+                note.append(f"   hits 100% in {widgets.duration(hit)}", style=RED)
+            if note.cell_len > 13:
+                lines.append(note)
         if u["credits"] and u["credits"].get("used_dollars") is not None:
-            lines.append(Text(""))
             lines.append(widgets.leader(
                 "Extra usage credits spent",
-                widgets.money(u["credits"]["used_dollars"],
-                              CONFIG.get("hide_costs")),
+                widgets.money(u["credits"]["used_dollars"], self._hide_costs),
                 width, PALETTE, value_style=ACCENT))
-        return self._panel("⚡ Limits", Group(*lines) if lines else Text("-"))
+        return lines
 
-    def _spending_panel(self, s, width):
+    def _spending_lines(self, s, width):
         if s is None:
-            return self._panel("$ Spending", Text("building transcript cache…",
-                                                  style=FAINT))
-        hide = bool(CONFIG.get("hide_costs"))
+            return [Text("building transcript cache…", style=FAINT)]
+        hide = self._hide_costs
         w = s["windows"]
-        rows = [
-            ("Today", w["today"], "since local midnight"),
-            ("Current 5h block", w["5h"], "aligned to the limit window"),
-            ("Last 7 days", w["7d"], "rolling"),
-            ("Last 30 days", w["30d"], "rolling"),
-            ("All time", w["all"], f"{s['transcripts']} transcripts"),
+        burn = s["burn"]
+        lines = [
+            widgets.leader("Today", widgets.money(w["today"]["cost"], hide),
+                           width, PALETTE),
+            widgets.leader("Current 5h block", widgets.money(w["5h"]["cost"], hide),
+                           width, PALETTE),
+            widgets.leader("Last 7 days", widgets.money(w["7d"]["cost"], hide),
+                           width, PALETTE),
+            widgets.leader("All time",
+                           f"{widgets.money(w['all']['cost'], hide)}  "
+                           f"[{s['transcripts']} transcripts]",
+                           width, PALETTE, value_style=DIM),
         ]
-        lines = []
-        for label, win, note in rows:
-            lines.append(widgets.leader(
-                label, f"{widgets.money(win['cost'], hide)}  [{note}]",
-                width, PALETTE, value_style=TEXT))
-        lines.append(Text(""))
-        lines.append(Text("Model cost breakdown (30d)", style=f"bold {DIM}"))
-        for r in s["by_model_30d"][:6]:
-            if r["cost"] < 0.005:
-                continue
-            lines.append(widgets.leader(
-                "  " + pricing.short_model(r["model"]),
-                f"{widgets.money(r['cost'], hide)}  {widgets.tokens(r['tokens'])} tok",
-                width, PALETTE, label_style=DIM))
-        return self._panel("$ Spending", Group(*lines), color=GREEN)
+        rate = Text(no_wrap=True, overflow="crop")
+        rate.append("Burn rate  ", style=TEXT)
+        rate.append(f"{widgets.money(burn['now'], hide)}/hr", style=ACCENT)
+        rate.append("  now vs  ", style=FAINT)
+        rate.append(f"{widgets.money(burn['avg_7d'], hide)}/hr", style=DIM)
+        rate.append(" average working hour this week", style=FAINT)
+        lines.append(rate)
 
-    def _activity_panel(self, s, width):
+        spark = Text(no_wrap=True, overflow="crop")
+        spark.append("Last 24h   ", style=TEXT)
+        spark.append_text(widgets.sparkline(s["hourly_24h"], PALETTE))
+        peak = max(s["hourly_24h"]) if s["hourly_24h"] else 0
+        spark.append(f"  peak {widgets.money(peak, hide)}/hr", style=FAINT)
+        lines.append(spark)
+
+        days = Text(no_wrap=True, overflow="crop")
+        days.append("Last 14d   ", style=TEXT)
+        days.append_text(widgets.sparkline(s["daily_14d"], PALETTE, color=GREEN))
+        dpeak = max(s["daily_14d"]) if s["daily_14d"] else 0
+        days.append(f"  peak {widgets.money(dpeak, hide)}/day", style=FAINT)
+        lines.append(days)
+        return lines
+
+    def _live_lines(self, rows, width):
+        if not rows:
+            return [Text("no sessions running", style=FAINT)]
+        frame = SPINNER_FRAMES[int(time.time() * 8) % len(SPINNER_FRAMES)]
+        lines = []
+        for r in rows[:6]:
+            t = Text(no_wrap=True, overflow="crop")
+            if r["status"] == "blocked":
+                t.append("● ", style=RED)
+                state = "needs input"
+                state_style = RED
+            elif r["status"] == "busy":
+                t.append(f"{frame} ", style=ACCENT)
+                state = BUSY_VERBS[(hash(r["row_key"]) + int(time.time() // 4))
+                                   % len(BUSY_VERBS)] + "…"
+                state_style = ACCENT
+            else:
+                t.append("○ ", style=DIM)
+                state = "idle"
+                state_style = FAINT
+            t.append(f"{self._truncate(r['name'], 24):<24} ", style=TEXT)
+            t.append(f"{state:<14}", style=state_style)
+            t.append(f"{self._truncate(r.get('branch') or '-', 22):<22} ", style=DIM)
+            t.append(f"{widgets.money(r.get('cost'), self._hide_costs):>10}  ",
+                     style=DIM)
+            t.append(fmt_uptime(r.get("started_at")), style=FAINT)
+            lines.append(t)
+        if len(rows) > 6:
+            lines.append(Text(f"+{len(rows) - 6} more — press s", style=FAINT))
+        return lines
+
+    def _render_home(self, rows, u, summary):
+        home = self.query_one("#home", Static)
+        width = max(48, home.content_size.width)
+        height = max(8, home.content_size.height)
+        sky, _ = self._sky_for(home)
+        inner = width - 4
+
+        blocks, y = [], 0
+
+        def add(title, lines, color):
+            nonlocal y
+            panel = widgets.starred_panel(title, lines, width, PALETTE, sky=sky,
+                                          origin=(0, y), title_color=color)
+            blocks.append(panel)
+            y += len(lines) + 2
+
+        add("⚡ Limits", self._limits_lines(u, inner), ACCENT)
+        add("$ Spending", self._spending_lines(summary, inner), GREEN)
+        add("● Live now", self._live_lines(rows, inner), PALETTE["yellow"])
+
+        # Whatever is left below the panels is open sky.
+        out = Text(no_wrap=True, overflow="crop")
+        for i, b in enumerate(blocks):
+            out.append_text(b)
+            if i < len(blocks) - 1:
+                out.append("\n")
+        for row in range(y, height):
+            out.append("\n")
+            out.append_text(widgets.sky_row(row, width, sky, PALETTE))
+        home.update(out)
+
+    # ------------------------------------------------------- analytics view
+
+    def _render_analytics(self, s):
+        body = self.query_one("#analytics-body", Static)
+        width = max(48, body.content_size.width or self.size.width - 6)
+        inner = width - 4
+        sky, _ = self._sky_for(body)
+        hide = self._hide_costs
+
         if s is None:
-            return self._panel("▤ Activity", Text("building transcript cache…",
-                                                  style=FAINT))
+            body.update(widgets.starred_panel(
+                "▤ Analytics", [Text("building transcript cache…", style=FAINT)],
+                width, PALETTE, sky=sky))
+            return
+
         w = s["windows"]
         col = 14
         head = Text(f"{'':<18}", style=DIM)
         for name in ("today", "7d", "30d"):
             head.append(f"{name:>{col}}", style=f"bold {DIM}")
-        lines = [head]
-        metrics = [
-            ("Messages", "msgs"), ("Sessions", "sessions"),
-            ("Tool calls", "tools"), ("Prompts", "prompts"),
-            ("Files touched", "files"),
-        ]
-        for label, key in metrics:
+        activity = [head]
+        for label, key in (("Messages", "msgs"), ("Sessions", "sessions"),
+                           ("Tool calls", "tools"), ("Prompts", "prompts"),
+                           ("Files touched", "files")):
             t = Text(f"{label:<18}", style=TEXT)
             for name in ("today", "7d", "30d"):
                 t.append(f"{widgets.count(w[name][key]):>{col}}", style=DIM)
-            lines.append(t)
+            activity.append(t)
         t = Text(f"{'Tokens in/out':<18}", style=TEXT)
         for name in ("today", "7d", "30d"):
             prompt_side = w[name]["in"] + w[name]["cr"] + w[name]["cw"]
-            cell = f"{widgets.tokens(prompt_side)}/{widgets.tokens(w[name]['out'])}"
-            t.append(cell.rjust(col), style=DIM)
-        lines.append(t)
-
+            t.append(f"{widgets.tokens(prompt_side)}/"
+                     f"{widgets.tokens(w[name]['out'])}".rjust(col), style=DIM)
+        activity.append(t)
         hit = s.get("cache_hit_7d")
         if hit is not None:
-            lines.append(Text(""))
-            lines.append(widgets.gauge_row("Cache hit 7d", hit, width, PALETTE,
-                                           color=GREEN,
-                                           suffix="of prompt tokens served from cache"))
-        return self._panel("▤ Activity", Group(*lines), color=PALETTE["yellow"])
+            activity.append(widgets.gauge_row(
+                "Cache hit 7d", hit, inner, PALETTE, color=GREEN,
+                suffix="of prompt tokens from cache"))
 
-    def _render_usage(self):
-        body = self.query_one("#usage-body", Static)
-        width = max(48, (body.content_size.width or self.size.width) - 4)
+        models = [widgets.leader(
+            pricing.short_model(r["model"]),
+            f"{widgets.money(r['cost'], hide)}  {widgets.tokens(r['tokens'])} tok",
+            inner, PALETTE) for r in s["by_model_30d"][:6] if r["cost"] >= 0.005]
 
-        u = usage.snapshot()
-        st = stats.snapshot()
-        summary = st.get("summary")
+        projects = [widgets.leader(
+            r["project"],
+            f"{widgets.money(r['cost'], hide)}  {r['sessions']} "
+            f"session{'s' if r['sessions'] != 1 else ''}",
+            inner, PALETTE) for r in s["by_project_30d"][:8]]
 
-        # Line the 5h spend window up with the real billing block whenever the
-        # API has told us when it resets.
-        five = next((w for w in u["windows"] if w["label"].startswith("5h")), None)
-        if five and five["resets_in"] is not None:
-            stats.set_five_hour_start(time.time() + five["resets_in"] - 5 * 3600)
+        tools = []
+        top = s["by_tool_30d"][:8]
+        busiest = top[0]["calls"] if top else 1
+        for r in top:
+            t = Text(no_wrap=True, overflow="crop")
+            t.append(f"{self._truncate(r['tool'], 20):<20} ", style=TEXT)
+            t.append_text(widgets.gauge(r["calls"] / busiest * 100,
+                                        max(8, inner - 35), PALETTE, color=DIM))
+            t.append(f" {widgets.count(r['calls']):>7} calls", style=DIM)
+            tools.append(t)
 
-        body.update(Group(
-            self._limits_panel(u, width),
-            self._spending_panel(summary, width),
-            self._activity_panel(summary, width),
-        ))
+        board = []
+        for r in s["sessions_today"][:6]:
+            label = r["title"] or r["sid"][:8]
+            board.append(widgets.leader(
+                f"{self._truncate(label, 34)}  [{r['project']}]",
+                widgets.money(r["cost"], hide), inner, PALETTE))
+        if not board:
+            board = [Text("nothing yet today", style=FAINT)]
 
-        parts = []
-        if st.get("building"):
-            done, total = st.get("done", 0), st.get("total", 0)
-            parts.append(f"[{ACCENT}]building transcript cache {done}/{total}[/]")
-        elif summary:
-            parts.append(f"{summary['transcripts']} transcripts")
-        if u["fetched_at"]:
-            age = int(time.time() - u["fetched_at"])
-            parts.append(f"[{FAINT}]limits {age}s ago[/]")
-        elif u["error"]:
-            parts.append(f"[{RED}]limits unavailable[/]")
-        self._usage_subtitle = " · ".join(parts)
-        self._usage_dirty = False
+        sections = [("▤ Activity", activity, PALETTE["yellow"]),
+                    ("◆ Models · 30d", models, ACCENT),
+                    ("▣ Projects · 30d", projects, GREEN),
+                    ("⚒ Tools · 30d", tools, PALETTE["yellow"]),
+                    ("★ Today's sessions", board, ACCENT)]
 
+        out = Text(no_wrap=True, overflow="crop")
+        y = 0
+        for i, (title, lines, color) in enumerate(sections):
+            if not lines:
+                continue
+            out.append_text(widgets.starred_panel(title, lines, width, PALETTE,
+                                                  sky=sky, origin=(0, y),
+                                                  title_color=color))
+            y += len(lines) + 2
+            if i < len(sections) - 1:
+                out.append("\n")
+        body.update(out)
+
+    # -------------------------------------------------------------- star map
+
+    def _render_map(self, interactive_rows, by_parent, detached):
+        """Sessions as a constellation: a bright star per session, its
+        background jobs orbiting it, joined by guide lines."""
+        widget = self.query_one("#map", Static)
+        width = max(40, widget.content_size.width)
+        height = max(10, widget.content_size.height)
+        sky, _ = self._sky_for(widget)
+        grid = [[None] * width for _ in range(height)]
+
+        def put(x, y, glyph, style):
+            if 0 <= x < width and 0 <= y < height:
+                grid[y][x] = (glyph, style)
+
+        def put_text(x, y, s, style):
+            for i, ch in enumerate(s):
+                put(x + i, y, ch, style)
+
+        sessions = interactive_rows or []
+        if not sessions:
+            put_text(2, 1, "no interactive sessions running", FAINT)
+
+        columns = max(1, min(3, (width - 4) // 34))
+        cell_w = (width - 4) // columns
+        # Height per constellation is driven by the busiest session, not by
+        # dividing up the screen — otherwise two sessions sit marooned at the
+        # top and bottom of an empty sky.
+        deepest = max((len(by_parent.get(r["session_id"], [])) for r in sessions),
+                      default=0)
+        cell_h = min(max(4, deepest + 3), max(4, height - 2))
+
+        for idx, r in enumerate(sessions):
+            cx = 3 + (idx % columns) * cell_w
+            cy = 1 + (idx // columns) * cell_h
+            jobs = by_parent.get(r["session_id"], [])
+            blocked = sum(1 for j in jobs if j["state"] == "blocked")
+            color = RED if blocked else (ACCENT if r["status"] == "busy" else GREEN)
+
+            put(cx, cy, "✻", f"bold {color}")
+            put_text(cx + 2, cy, self._truncate(r["name"], cell_w - 6), f"bold {TEXT}")
+            cost = widgets.money(r.get("cost"), self._hide_costs)
+            put_text(cx + 2, cy + 1, f"{cost}  pid {r['pid']}", FAINT)
+
+            # Jobs orbit their session, joined by a guide line.
+            for k, j in enumerate(jobs[:cell_h - 2]):
+                jy = cy + 2 + k
+                put(cx, jy, "│" if k < len(jobs) - 1 else "╰", BORDER)
+                put(cx + 1, jy, "─", BORDER)
+                jcolor = {"blocked": RED, "working": ACCENT,
+                          "done": FAINT}.get(j["state"], DIM)
+                put(cx + 2, jy, "●" if j["live"] else "○", jcolor)
+                put_text(cx + 4, jy, self._truncate(j["name"], cell_w - 10), DIM)
+
+        if detached:
+            n = len(detached)
+            put_text(3, height - 2,
+                     f"{n} dormant background job{'s' if n != 1 else ''}", FAINT)
+
+        out = Text(no_wrap=True, overflow="crop")
+        for y in range(height):
+            for x in range(width):
+                cell = grid[y][x]
+                if cell:
+                    out.append(cell[0], style=cell[1])
+                else:
+                    star = sky.get((x, y))
+                    if star:
+                        out.append(star[0], style=star[1])
+                    else:
+                        out.append(" ")
+            if y < height - 1:
+                out.append("\n")
+        widget.update(out)
     @staticmethod
     def _truncate(s, n):
         s = " ".join(s.split())
