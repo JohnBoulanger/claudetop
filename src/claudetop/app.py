@@ -509,13 +509,6 @@ class SettingsScreen(ModalScreen):
          lambda v: f"every {v}s", False),
         ("stats_retention_days", "Keep detail", [7, 14, 31, 60, 90],
          lambda v: f"{v} days", False),
-        # These two pace the weekly projection: how much of the week you
-        # actually work, and how hard.
-        ("work_days", "Work week",
-         [[0, 1, 2, 3, 4], [0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5, 6], [0, 2, 4]],
-         lambda v: f"{len(v)} days/wk", True),
-        ("work_blocks_per_day", "Blocks a day", [1, 2, 3, 4],
-         lambda v: f"{v} x 5h", True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -941,27 +934,13 @@ class SessionDashboard(App):
             if w["resets_in"] is None:
                 continue
             note = Text(f"{'':<13}", style=DIM)
-            weekly = not w["label"].startswith("5h")
-            if weekly:
-                # A weekly window spans nights and weekends you do not work
-                # through, so pace it against working hours instead of the
-                # wall clock — otherwise every Monday reads like a blowout.
-                shaped = usage.project_weekly(w, CONFIG)
-                if shaped:
-                    proj, done_h, all_h = shaped
-                    note.append(f"projected ~{proj:.0f}% by reset",
-                                style=RED if proj >= 100 else DIM)
-                    note.append(f"  at {done_h:.0f} of {all_h:.0f} working hours",
-                                style=FAINT)
-                hit = usage.weekly_time_to_limit(w, CONFIG)
-            else:
-                span = 5 * 3600
-                elapsed = max(0.0, min(1.0, (span - w["resets_in"]) / span))
-                proj = usage.projected(w, elapsed)
-                if proj is not None:
-                    note.append(f"projected ~{proj:.0f}% by reset",
-                                style=RED if proj >= 100 else DIM)
-                hit = self._time_to_limit(w)
+            span = 5 * 3600 if w["label"].startswith("5h") else 7 * 86400
+            elapsed = max(0.0, min(1.0, (span - w["resets_in"]) / span))
+            proj = usage.projected(w, elapsed)
+            if proj is not None:
+                note.append(f"projected ~{proj:.0f}% by reset",
+                            style=RED if proj >= 100 else DIM)
+            hit = self._time_to_limit(w)
             if hit is not None:
                 note.append(f"   hits 100% in {widgets.duration(hit)}", style=RED)
             if note.cell_len > 13:

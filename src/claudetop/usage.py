@@ -27,7 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from . import paths
 
@@ -213,112 +213,12 @@ def projected(window, spent_fraction_of_window):
     """Naive straight-line projection of a window's % at reset time.
 
     spent_fraction_of_window is how much of the window has already elapsed
-    (0..1). Right for the 5h window, which is one working block by
-    definition; for the weekly window see project_weekly."""
+    (0..1). Matches what openusage shows as 'projected ~N% by reset'."""
     if not window or not window.get("pct") or not spent_fraction_of_window:
         return None
     if spent_fraction_of_window <= 0.02:  # too early to say anything useful
         return None
     return min(999.0, window["pct"] / spent_fraction_of_window)
-
-
-# ------------------------------------------------------- the working week
-
-# Monday is 0, matching datetime.weekday().
-WORK_DEFAULTS = {
-    "work_days": [0, 1, 2, 3, 4],
-    "work_blocks_per_day": 2,   # 5h limit windows you expect to use in a day
-    "work_start_hour": 9,
-}
-
-
-def work_shape(cfg):
-    cfg = cfg or {}
-    days = cfg.get("work_days")
-    if not isinstance(days, (list, tuple)) or not days:
-        days = WORK_DEFAULTS["work_days"]
-    blocks = cfg.get("work_blocks_per_day") or WORK_DEFAULTS["work_blocks_per_day"]
-    start = cfg.get("work_start_hour")
-    if start is None:
-        start = WORK_DEFAULTS["work_start_hour"]
-    return set(int(d) for d in days), float(blocks), int(start)
-
-
-def work_hours_between(start_ts, end_ts, cfg=None):
-    """Working hours between two timestamps, per the configured week.
-
-    A working day runs from work_start_hour for blocks x 5 hours — two blocks
-    from 09:00 is 09:00 to 19:00. Weekends (or whatever is not in work_days)
-    contribute nothing, which is the whole point: a weekly projection that
-    counts Saturday night as burn time will always read high.
-    """
-    if end_ts <= start_ts:
-        return 0.0
-    work_days, blocks, start_hour = work_shape(cfg)
-    span = blocks * 5.0 * 3600.0
-    total = 0.0
-    day = datetime.fromtimestamp(start_ts).replace(
-        hour=0, minute=0, second=0, microsecond=0)
-    while day.timestamp() < end_ts:
-        if day.weekday() in work_days:
-            open_ = day.replace(hour=start_hour).timestamp()
-            close = open_ + span
-            total += max(0.0, min(close, end_ts) - max(open_, start_ts))
-        day += timedelta(days=1)
-    return total / 3600.0
-
-
-def project_weekly(window, cfg=None, now=None):
-    """Where the weekly window lands at reset, at your current pace.
-
-    Scales by working hours rather than wall clock: if a third of the week's
-    working hours have passed and you are at 9%, you land near 27% — not the
-    63% a 24/7 assumption would claim.
-
-    Returns (projected_pct, elapsed_work_hours, total_work_hours) or None.
-    """
-    if not window or window.get("resets_in") is None or not window.get("pct"):
-        return None
-    now = now or time.time()
-    end = now + window["resets_in"]
-    start = end - 7 * 86400
-    elapsed = work_hours_between(start, now, cfg)
-    total = work_hours_between(start, end, cfg)
-    if elapsed < 0.5 or total <= 0:      # too early in the week to say
-        return None
-    return min(999.0, window["pct"] * total / elapsed), elapsed, total
-
-
-def weekly_time_to_limit(window, cfg=None, now=None, step_minutes=15):
-    """Seconds of wall clock until the weekly window would reach 100%.
-
-    Walks the calendar forward accumulating only working hours, so the answer
-    lands on a working afternoon rather than in the middle of Sunday night.
-    None when the pace does not reach the cap before reset.
-    """
-    if not window or window.get("resets_in") is None or not window.get("pct"):
-        return None
-    now = now or time.time()
-    end = now + window["resets_in"]
-    start = end - 7 * 86400
-    elapsed = work_hours_between(start, now, cfg)
-    if elapsed < 0.5:
-        return None
-    rate = window["pct"] / elapsed                 # percent per working hour
-    if rate <= 0:
-        return None
-    needed = (100.0 - window["pct"]) / rate        # working hours still to go
-    if needed <= 0:
-        return 0.0
-    step = step_minutes * 60
-    accrued, t = 0.0, now
-    while t < end:
-        nxt = min(t + step, end)
-        accrued += work_hours_between(t, nxt, cfg)
-        if accrued >= needed:
-            return nxt - now
-        t = nxt
-    return None
 
 
 # ----------------------------------------------------- background refresher

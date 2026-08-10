@@ -72,11 +72,6 @@ DEFAULT_CONFIG = {
     "usage_poll_seconds": 60,
     "stats_retention_days": 31,   # how long per-message detail is kept in cache
     "hide_costs": False,
-    # Your working week, used to pace the weekly limit projection. Monday is
-    # 0. Two blocks is two 5h limit windows in a day, so 09:00 to 19:00.
-    "work_days": [0, 1, 2, 3, 4],
-    "work_blocks_per_day": 2,
-    "work_start_hour": 9,
 }
 
 
