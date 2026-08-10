@@ -5,6 +5,7 @@ drawn with this app's palette. Everything returns a Rich Text so it can be
 dropped straight into a Panel.
 """
 
+from rich.cells import cell_len
 from rich.text import Text
 
 # Eighth blocks give a gauge sub-cell resolution, so a 47% bar does not jump
@@ -74,7 +75,8 @@ def leader(label, value, width, palette, label_style=None, value_style=None,
     leader between. The dot pattern repeats to fill whatever is left."""
     label = str(label)
     value = str(value)
-    gap = max(1, width - len(label) - len(value) - 2)
+    # cell_len, not len: a glyph like ⚡ or an emoji occupies two columns.
+    gap = max(1, width - cell_len(label) - cell_len(value) - 2)
     fill = (dot * ((gap // len(dot)) + 1))[:gap]
     t = Text(no_wrap=True, overflow="ellipsis")
     t.append(label, style=label_style or palette["text"])
@@ -108,7 +110,7 @@ def starred_panel(title, lines, width, palette, sky=None, origin=(0, 0),
     head = f"{ROUND['tl']}{ROUND['h']} "
     out.append(head, style=palette["border"])
     out.append(title, style=f"bold {tcolor}")
-    rule = width - len(head) - len(title) - 1
+    rule = width - cell_len(head) - cell_len(title) - 1
     out.append(" " + ROUND["h"] * max(0, rule - 1) + ROUND["tr"],
                style=palette["border"])
     out.append("\n")

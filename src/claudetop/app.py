@@ -983,19 +983,18 @@ class SessionDashboard(App):
         hour_labels = []
         for i in range(len(hours)):
             when = datetime.fromtimestamp(start + i * 3600)
-            hour_labels.append(f"{when.hour:02d}" if i % 3 == 0 else "")
+            # 12-hour clock, written by hand — the platform strftime codes for
+            # an unpadded hour differ between Windows and everything else.
+            label = f"{when.hour % 12 or 12}{'am' if when.hour < 12 else 'pm'}"
+            hour_labels.append(label if i % 3 == 0 else "")
 
         days = s["daily_14d"]
         dstart = s.get("daily_start") or (time.time() - 13 * 86400)
         day_labels = []
         for i in range(len(days)):
             when = datetime.fromtimestamp(dstart + i * 86400)
-            day_labels.append(when.strftime("%a")[:2] if i % 2 == 0 else "")
-
-        months = s.get("monthly") or []
-        month_labels = [datetime.strptime(ym, "%Y-%m").strftime("%b")
-                        for ym, _ in months]
-        month_values = [c for _, c in months]
+            day_labels.append(when.strftime("%b %d").replace(" 0", " ")
+                              if i % 2 == 0 else "")
 
         def head(title, note, *facts):
             t = Text(no_wrap=True, overflow="crop")
@@ -1015,13 +1014,6 @@ class SessionDashboard(App):
                           f"working day avg {money(sum(active_days) / len(active_days)) if active_days else money(0)}"))
         lines += widgets.linechart(days, 4, width, PALETTE, color=GREEN,
                                    value_fmt=money, labels=day_labels)
-        if month_values:
-            lines.append(head("Per month", f"{len(months)} months on record",
-                              f"peak {money(max(month_values))}",
-                              f"this month {money(month_values[-1])}"))
-            lines += widgets.linechart(month_values, 4, width, PALETTE,
-                                       color=YELLOW, value_fmt=money,
-                                       labels=month_labels)
         return lines
 
     def _live_lines(self, rows, width):

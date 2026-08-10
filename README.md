@@ -23,7 +23,7 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 
 | Key | View | What it shows |
 |-----|------|---------------|
-| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, line charts of spend per hour / per day / per month, and the live session strip. |
+| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, line charts of spend per hour and per day, and the live session strip. |
 | `s` | Sessions | Every live session and background job, with status, branch, cost and uptime. |
 | `a` | Analytics | Activity counters, cache hit rate, cost by model, cost by repo, most-used tools, and today's most expensive sessions. |
 | `m` | Star map | Sessions drawn as a constellation, each with its background jobs orbiting it. |
@@ -137,7 +137,8 @@ lands on the next launch; the settings screen marks which options work that way.
 
 The first launch reads every transcript once — about 5 seconds for 430 MB — and
 caches per-file results. Per-message detail is pruned after `stats_retention_days`,
-but per-month token sums are kept forever, which is what the monthly chart draws. After that only the new tail of each file is read, so
+but per-month token sums are kept forever, so long-horizon totals survive
+the prune (`summary["monthly"]`, not currently charted). After that only the new tail of each file is read, so
 refreshes are effectively free. The cache lives in the platform cache directory
 and can be deleted at any time; it will rebuild.
 
