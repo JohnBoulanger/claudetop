@@ -23,7 +23,7 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 
 | Key | View | What it shows |
 |-----|------|---------------|
-| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, line charts of spend per hour and per day, and the live session strip. |
+| — | Home | 5h / 7d limit gauges with reset countdown and projection, spend by window, burn rate, braille line charts of spend per hour and per day, and the live session strip. |
 | `s` | Sessions | Every live session and background job, with status, branch, cost and uptime. |
 | `a` | Analytics | Activity counters, cache hit rate, cost by model, cost by repo, most-used tools, and today's most expensive sessions. |
 | `m` | Star map | Sessions drawn as a constellation, each with its background jobs orbiting it. |
@@ -136,6 +136,11 @@ same palettes as `black` and `warm`.
 `claudetop --paths` prints the config and cache locations.
 
 ## Performance
+
+Charts plot 15-minute buckets over the last 24 hours and 6-hour buckets over
+the last 14 days, drawn in braille so each cell carries two points across and
+four down. The y axis is in bucket units and the header says so; the dashed
+line is the mean of the non-idle buckets.
 
 The first launch reads every transcript once — about 5 seconds for 430 MB — and
 caches per-file results. Per-message detail is pruned after `stats_retention_days`,

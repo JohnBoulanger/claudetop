@@ -156,6 +156,104 @@ def sky_row(y, width, sky, palette, prefix=None):
     return t
 
 
+BRAILLE_BASE = 0x2800
+# Dot bit for (column-in-cell, row-in-cell). Braille numbers its dots in a
+# famously odd order; this table is the whole of that oddity.
+BRAILLE_BIT = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
+               (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80}
+
+
+def braille_chart(values, height, width, palette, color=None, gutter=10,
+                  value_fmt=None, labels=None, average=True, grid=True):
+    """A line chart at braille resolution: 2 dots wide, 4 tall, per cell.
+
+    A six-row chart is therefore 24 vertical steps rather than 6, and a full
+    width panel plots a couple of hundred points instead of one per column —
+    which is what makes 15-minute buckets legible.
+
+    Draws, in order: a dim gridline at each labelled level, an average line,
+    then the series. Returns the chart rows plus an x-label row.
+    """
+    rows = []
+    if not values or height < 2 or width < 20:
+        return rows
+
+    top = max(values) or 1.0
+    fmt = value_fmt or (lambda v: f"{v:g}")
+    gutter = max(gutter, len(fmt(top)) + 2)
+    cols = max(8, width - gutter)
+    dot_w, dot_h = cols * 2, height * 4
+    color = color or palette["accent"]
+
+    cells = {}                      # (row, col) -> bitmask
+
+    def plot(dx, dy):
+        if 0 <= dx < dot_w and 0 <= dy < dot_h:
+            key = (dy // 4, dx // 2)
+            cells[key] = cells.get(key, 0) | BRAILLE_BIT[(dx % 2, dy % 4)]
+
+    def dot_y(v):
+        return int(round((1.0 - min(1.0, max(0.0, v / top))) * (dot_h - 1)))
+
+    # Spread the series across the full dot width and join the points, so a
+    # gap between samples reads as a slope rather than two islands.
+    n = len(values)
+    last = None
+    for dx in range(dot_w):
+        idx = int(dx * n / dot_w)
+        y = dot_y(values[min(n - 1, idx)])
+        if last is not None and abs(y - last) > 1:
+            step = 1 if y > last else -1
+            for fill in range(last + step, y, step):
+                plot(dx, fill)
+        plot(dx, y)
+        last = y
+
+    active = [v for v in values if v > 0]
+    mean_row = None
+    if average and active:
+        mean_row = dot_y(sum(active) / len(active)) // 4
+
+    label_rows = {0: fmt(top), height - 1: fmt(0)}
+    if height >= 5:
+        label_rows[height // 2] = fmt(top / 2)
+
+    for row in range(height):
+        line = Text(no_wrap=True, overflow="crop")
+        tag = label_rows.get(row, "")
+        style = palette["dim"] if row == 0 else palette["faint"]
+        line.append(f"{tag:>{gutter - 1}} ", style=style)
+        for col in range(cols):
+            bits = cells.get((row, col))
+            if bits:
+                line.append(chr(BRAILLE_BASE + bits), style=color)
+            elif row == mean_row:
+                # Dashed, not solid: the average is a reference, not data.
+                line.append("╌" if col % 2 == 0 else " ", style=palette["faint"])
+            elif grid and row in label_rows:
+                line.append("·" if col % 3 == 0 else " ", style=palette["faint"])
+            else:
+                line.append(" ")
+        rows.append(line)
+
+    if labels:
+        row = Text(no_wrap=True, overflow="crop")
+        row.append(" " * gutter)
+        used = 0
+        per = cols / max(1, len(labels))
+        for i, lab in enumerate(labels):
+            if not lab:
+                continue
+            start = int(i * per)
+            if start < used:
+                continue
+            row.append(" " * (start - used))
+            row.append(str(lab), style=palette["faint"])
+            used = start + len(str(lab))
+        rows.append(row)
+    return rows
+
+
 def linechart(values, height, width, palette, color=None, gutter=9,
               value_fmt=None, labels=None):
     """A compact line chart, drawn with box-drawing glyphs.

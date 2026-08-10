@@ -988,42 +988,80 @@ class SessionDashboard(App):
         money = ((lambda v: "—") if hide
                  else (lambda v: "$0" if not v else widgets.money(v)))
 
+        # The coarse series still drives the headline figures; the fine one is
+        # what gets plotted, because braille has the resolution for it.
         hours = s["hourly_24h"]
         start = s.get("hourly_start") or (time.time() - 24 * 3600)
+        fine_hours = s.get("fine_hourly") or hours
+        hstep = s.get("fine_hourly_step") or 3600
+        # A label every two hours, on the hour.
         hour_labels = []
-        for i in range(len(hours)):
-            when = datetime.fromtimestamp(start + i * 3600)
+        for i in range(len(fine_hours)):
+            when = datetime.fromtimestamp(start + i * hstep)
+            on_tick = when.hour % 2 == 0 and when.minute < hstep / 60
             # 12-hour clock, written by hand — the platform strftime codes for
             # an unpadded hour differ between Windows and everything else.
-            label = f"{when.hour % 12 or 12}{'am' if when.hour < 12 else 'pm'}"
-            hour_labels.append(label if i % 3 == 0 else "")
+            hour_labels.append(
+                f"{when.hour % 12 or 12}{'am' if when.hour < 12 else 'pm'}"
+                if on_tick else "")
 
         days = s["daily_14d"]
         dstart = s.get("daily_start") or (time.time() - 13 * 86400)
+        fine_days = s.get("fine_daily") or days
+        dstep = s.get("fine_daily_step") or 86400
+        per_day = max(1, int(86400 / dstep))
         day_labels = []
-        for i in range(len(days)):
-            when = datetime.fromtimestamp(dstart + i * 86400)
+        for i in range(len(fine_days)):
+            when = datetime.fromtimestamp(dstart + i * dstep)
+            # Every other day, counted off the start of the window — day-of-
+            # month parity puts two labels next to each other at month ends.
+            on_tick = i % per_day == 0 and (i // per_day) % 2 == 0
             day_labels.append(when.strftime("%b %d").replace(" 0", " ")
-                              if i % 2 == 0 else "")
+                              if on_tick else "")
 
         def head(title, note, *facts):
+            """Title, window, then as many facts as the panel is wide enough
+            for — a fact that would run past the border is dropped, not
+            wrapped, because a wrapped header breaks the panel frame."""
             t = Text(no_wrap=True, overflow="crop")
             t.append(title, style=f"bold {TEXT}")
             t.append(f"   {note}", style=FAINT)
             for f in facts:
+                if t.cell_len + len(f) + 3 > width:
+                    break
                 t.append(f"   {f}", style=DIM)
             return t
 
+        # The y axis is in bucket units, so the header quotes the same unit —
+        # a 15-minute peak and an hourly peak are different numbers and
+        # showing one above the other reads as a bug.
         active_days = [d for d in days if d > 0]
-        lines = [head("Per hour", "last 24h", f"peak {money(max(hours or [0]))}",
+        hmins = int((s.get("fine_hourly_step") or 3600) / 60)
+        dhours = int((s.get("fine_daily_step") or 86400) / 3600)
+
+        # The dashed line on each chart is the mean of the non-idle buckets;
+        # name it here so the gutter does not have to.
+        def mean_of(series):
+            live = [v for v in series if v > 0]
+            return sum(live) / len(live) if live else 0.0
+
+        lines = [head("Per hour", f"last 24h in {hmins}m steps",
+                      f"peak {money(max(fine_hours or [0]))}/{hmins}m",
+                      f"╌ avg {money(mean_of(fine_hours))}",
+                      f"busiest hour {money(max(hours or [0]))}",
                       f"total {money(sum(hours))}")]
-        lines += widgets.linechart(hours, 4, width, PALETTE, color=ACCENT,
-                                   value_fmt=money, labels=hour_labels)
-        lines.append(head("Per day", "last 14 days",
-                          f"peak {money(max(days or [0]))}",
-                          f"working day avg {money(sum(active_days) / len(active_days)) if active_days else money(0)}"))
-        lines += widgets.linechart(days, 4, width, PALETTE, color=GREEN,
-                                   value_fmt=money, labels=day_labels)
+        lines += widgets.braille_chart(fine_hours, 6, width, PALETTE,
+                                       color=ACCENT, value_fmt=money,
+                                       labels=hour_labels)
+        lines.append(head("Per day", f"last 14 days in {dhours}h steps",
+                          f"peak {money(max(fine_days or [0]))}/{dhours}h",
+                          f"╌ avg {money(mean_of(fine_days))}",
+                          f"busiest day {money(max(days or [0]))}",
+                          f"working day avg "
+                          f"{money(sum(active_days) / len(active_days)) if active_days else money(0)}"))
+        lines += widgets.braille_chart(fine_days, 6, width, PALETTE,
+                                       color=GREEN, value_fmt=money,
+                                       labels=day_labels)
         return lines
 
     def _live_lines(self, rows, width):
