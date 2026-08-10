@@ -522,7 +522,8 @@ class CustomizeScreen(ModalScreen):
         Binding("up,k", "prev", "Up", show=False),
         Binding("down,j", "next", "Down", show=False),
         Binding("left,h", "back", "Previous value", show=False),
-        Binding("right,l,enter,space", "forward", "Next value", show=False),
+        Binding("right,l", "forward", "Next value", show=False),
+        Binding("enter,space", "confirm", "Confirm", show=False),
         Binding("r", "reset", "Reset this option", show=False),
     ]
 
@@ -572,6 +573,8 @@ class CustomizeScreen(ModalScreen):
 
     def on_mount(self):
         self._row = 0
+        # Arrows only *choose*; nothing is written until enter. Keyed by row.
+        self._pending = {}
         # Its own sky instance, so previewing a pack never disturbs the one
         # running behind the dashboard.
         self._preview_sky = None
@@ -607,18 +610,25 @@ class CustomizeScreen(ModalScreen):
         if key == "gauges" or key == "session_colors" or key == "layout":
             self.app.refresh_sessions()
 
+    def _candidate(self, row=None):
+        """What the row is *showing*: the staged choice, or the saved value."""
+        row = self._row if row is None else row
+        key = self.OPTIONS[row][1]
+        return self._pending.get(row, self._value(key))
+
     def _step(self, delta):
-        _, key, _, _, _, live, _ = self.OPTIONS[self._row]
+        key = self.OPTIONS[self._row][1]
         values = self._values(key)
-        current = self._value(key)
         try:
-            i = values.index(current)
+            i = values.index(self._candidate())
         except ValueError:
             i = 0
-        self._set(key, values[(i + delta) % len(values)])
+        choice = values[(i + delta) % len(values)]
+        if choice == self._value(key):
+            self._pending.pop(self._row, None)
+        else:
+            self._pending[self._row] = choice
         self._draw()
-        if not live:
-            self.app.notify("Saved — restart claudetop to see it")
 
     def action_prev(self):
         self._row = (self._row - 1) % len(self.OPTIONS)
@@ -634,29 +644,59 @@ class CustomizeScreen(ModalScreen):
     def action_forward(self):
         self._step(1)
 
+    def action_confirm(self):
+        """Commit the staged choice. Nothing reaches the config file before
+        this point, so arrowing past an option never changes anything."""
+        _, key, label, _, fmt, live, _ = self.OPTIONS[self._row]
+        if self._row not in self._pending:
+            self.app.notify(f"{label} is already {fmt(self._value(key))}")
+            return
+        value = self._pending.pop(self._row)
+        self._set(key, value)
+        self._draw()
+        self.app.notify(f"{label} set to {fmt(value)}" +
+                        ("" if live else " — restart to see it"))
+
     def action_reset(self):
-        _, key, label, _, _, live, _ = self.OPTIONS[self._row]
+        _, key, label, _, fmt, _, _ = self.OPTIONS[self._row]
         default = (theme.DEFAULT_PRESET if key == "theme"
                    else paths.DEFAULT_CONFIG.get(key))
-        self._set(key, default)
+        if default == self._value(key):
+            self._pending.pop(self._row, None)
+            self._draw()
+            return
+        self._pending[self._row] = default
         self._draw()
-        self.app.notify(f"{label} back to default")
+        self.app.notify(f"{label} → {fmt(default)} — press enter to confirm")
 
     def action_close(self):
+        """Esc drops a staged choice first, so it can undo as well as leave."""
+        if self._pending:
+            self._pending.clear()
+            self._draw()
+            self.app.notify("Discarded unconfirmed changes")
+            return
         self.dismiss()
 
     # ------------------------------------------------------------ preview
 
     PREVIEW_W, PREVIEW_H = 34, 9
 
+    def _staged(self, key):
+        """The value the preview should show: staged if any, else saved."""
+        for row, (_, k, *_rest) in enumerate(self.OPTIONS):
+            if k == key and row in self._pending:
+                return self._pending[row]
+        return self._value(key)
+
     def _sky_preview(self):
         """A live sample of the chosen pack, at the chosen motion."""
-        name = self._value("sky")
-        motion = self._value("motion")
+        name = self._staged("sky")
+        motion = self._staged("motion")
         if self._preview_name != (name, motion):
             self._preview_sky = skies.build(
                 name, PALETTE, motion=motion,
-                model_tint=bool(self._value("model_tint")))
+                model_tint=bool(self._staged("model_tint")))
             self._preview_sky.resize(self.PREVIEW_W, self.PREVIEW_H)
             self._preview_sky.set_context(
                 projects=[{"cost": c} for c in (9, 5, 7, 3, 6, 2)],
@@ -681,7 +721,7 @@ class CustomizeScreen(ModalScreen):
         out += self._sky_preview()
         out.append(Text(""))
 
-        style = self._value("gauges")
+        style = self._staged("gauges")
         for label, pct in (("5h limit", 62.0), ("7d limit", 14.0)):
             row = Text(no_wrap=True, overflow="crop")
             row.append(f"{label:<9} ", style=TEXT)
@@ -692,8 +732,12 @@ class CustomizeScreen(ModalScreen):
             out.append(row)
 
         out.append(Text(""))
-        order = " → ".join(self.app.panel_order())
+        layout = self._staged("layout")
+        order = " → ".join(LAYOUTS.get(layout, LAYOUTS[DEFAULT_LAYOUT]))
         out.append(Text(f"panels  {order}", style=FAINT))
+        if self._pending:
+            out.append(Text(""))
+            out.append(Text("⏎ press enter to confirm", style=f"bold {ACCENT}"))
         return out
 
     # --------------------------------------------------------------- draw
@@ -708,40 +752,66 @@ class CustomizeScreen(ModalScreen):
                 left.append(Text(group.upper(), style=f"bold {DIM}"))
                 section = group
             selected = i == self._row
+            staged = self._pending.get(i)
             row = Text(no_wrap=True, overflow="ellipsis")
             row.append("▸ " if selected else "  ", style=ACCENT)
             row.append(f"{label:<16}", style=TEXT if selected else DIM)
-            row.append(fmt(self._value(key)),
-                       style=ACCENT if selected else TEXT)
+            saved = self._value(key)
+            if staged is not None:
+                # Unconfirmed: show what it is now, then what enter would make it.
+                row.append(fmt(saved), style=FAINT)
+                row.append(" → ", style=FAINT)
+                row.append(fmt(staged), style=f"bold {YELLOW}")
+                row.append(" ⏎", style=YELLOW)
+            else:
+                row.append(fmt(saved), style=ACCENT if selected else TEXT)
             if not live:
                 row.append(" *", style=FAINT)
             left.append(row)
             if selected:
                 left.append(Text(f"    {blurb}", style=FAINT))
                 choices = Text("    ", no_wrap=True, overflow="ellipsis")
-                for v in self._values(key):
-                    picked = v == self._value(key)
-                    choices.append(f"[{fmt(v)}]" if picked else f" {fmt(v)} ",
-                                   style=ACCENT if picked else FAINT)
+                for n, v in enumerate(self._values(key)):
+                    if n:
+                        choices.append(" ")
+                    if staged is not None and v == staged:
+                        # Where the arrows are sitting, not yet committed.
+                        choices.append(f"❯{fmt(v)}❮", style=f"bold {YELLOW}")
+                    elif v == saved:
+                        choices.append(f"[{fmt(v)}]", style=ACCENT)
+                    else:
+                        choices.append(fmt(v), style=FAINT)
                 left.append(choices)
 
         right = self._preview_block()
 
         # Two columns, padded to the same height so the box stays square.
-        col_w = 44
+        col_w = 50
         height = max(len(left), len(right))
         out = Text(no_wrap=True, overflow="crop")
-        out.append("Customize\n", style=f"bold {ACCENT}")
-        out.append("↑↓ move   ←→ change   r reset   esc close\n\n", style=FAINT)
+        out.append("Customize" + chr(10), style=f"bold {ACCENT}")
+        out.append("↑↓ move   ←→ choose   ", style=FAINT)
+        out.append("⏎ enter to confirm",
+                   style=ACCENT if self._pending else DIM)
+        out.append("   r default   ", style=FAINT)
+        out.append("esc discard" if self._pending else "esc close",
+                   style=FAINT)
+        out.append(chr(10) * 2)
         for i in range(height):
             lhs = left[i] if i < len(left) else Text("")
             rhs = right[i] if i < len(right) else Text("")
+            # Keep the columns from colliding: a long staged row is
+            # trimmed rather than allowed to shove the preview sideways.
+            if lhs.cell_len > col_w - 2:
+                lhs = lhs.copy()
+                lhs.truncate(col_w - 2, overflow="ellipsis")
             out.append_text(lhs)
-            pad = max(1, col_w - lhs.cell_len)
-            out.append(" " * pad)
+            out.append(" " * max(1, col_w - lhs.cell_len))
             out.append_text(rhs)
-            out.append("\n")
-        out.append("\n* takes effect on the next launch", style=FAINT)
+            out.append(chr(10))
+        out.append(chr(10) + "Nothing is saved until you press ", style=DIM)
+        out.append("enter", style=f"bold {ACCENT}")
+        out.append(".   * takes effect on the next launch", style=FAINT)
         self.query_one("#customize", Static).update(out)
 class SessionDashboard(App):
     CSS = CSS

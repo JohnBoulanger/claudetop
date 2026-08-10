@@ -29,7 +29,7 @@ Every other view is a toggle — the same key, or `esc`, brings you home.
 | `m` | Star map | Sessions drawn as a constellation, each with its background jobs orbiting it. |
 | `h` | — | Hide every dollar figure, for screen sharing. |
 | `r` | — | Force a refresh. |
-| `ctrl+p` | Customize | Every option, grouped, with a live preview of the background and gauges beside it. Arrows change values, `r` resets one to its default, and each change is written to the config file immediately. |
+| `ctrl+p` | Customize | Every option, grouped, with a live preview beside it. `↑↓` moves, `←→` chooses a value, and **enter confirms** — nothing is written until you press it. `r` stages the default, `esc` discards anything unconfirmed and a second `esc` closes. |
 | `q` | — | Quit. |
 
 A compact 5h / 7d gauge strip sits under the title in every view, so you never
