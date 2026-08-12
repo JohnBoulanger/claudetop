@@ -700,7 +700,7 @@ class CustomizeScreen(ModalScreen):
             self._preview_sky.resize(self.PREVIEW_W, self.PREVIEW_H)
             self._preview_sky.set_context(
                 projects=[{"cost": c} for c in (9, 5, 7, 3, 6, 2)],
-                session_names=["EVA-14", "reviewer", "claudetop"])
+                session_names=["refactor", "reviewer", "claudetop"])
             self._preview_name = (name, motion)
         sky = self._preview_sky
         sky.set_activity(3, 40)

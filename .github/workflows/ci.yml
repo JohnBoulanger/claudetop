@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    # A TUI cannot be driven headlessly here, so this only proves the package
+    # installs, imports and answers its non-interactive flags on every
+    # supported Python and on both platforms people actually run it on.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install .
+      - name: import every module
+        run: >
+          python -c "import claudetop, claudetop.app, claudetop.focus,
+          claudetop.paths, claudetop.pricing, claudetop.skies, claudetop.stats,
+          claudetop.theme, claudetop.usage, claudetop.widgets,
+          claudetop.worktrees; print(claudetop.__version__)"
+      - run: claudetop --version
+      - run: claudetop --paths
+      - run: claudetop-wt --json

@@ -4,15 +4,17 @@ A live terminal dashboard for Claude Code: what is running right now, what it
 is costing, and how close you are to your subscription limits.
 
 Read-only. It watches the files Claude Code already writes on your machine and
-makes one HTTPS call to Anthropic's own usage endpoint. It never starts, stops,
-or writes to a session.
+makes one HTTPS call a minute to Anthropic's own usage endpoint, reusing the
+OAuth token Claude Code already holds. Nothing is sent anywhere else, the token
+is never copied or logged, and no session is ever started, stopped or written
+to. Set `"usage_api": false` in the config to drop the network call entirely.
 
 ```
 ✻ Claude Sessions
 6 sessions · polling ~/.claude
 
   Status         Name              Kind          Branch   Cost      Uptime   PID
-  ⠹ Marinating…  EVA-14            background    HEAD     $398.49   92h31m   48848
+  ⠹ Marinating…  refactor          background    HEAD     $398.49   92h31m   48848
   ○ idle         reviewer          interactive   HEAD     $5.10     1h37m    38000
 ```
 
@@ -122,9 +124,9 @@ yourself:
 ```json
 {
   "theme": { "preset": "black", "accent": "#da7756" },
-  "worktree_root": "C:/eva-wt",
-  "worktree_base_dir": "C:/Users/you/turing-analytics",
-  "worktree_org": "Your-Org",
+  "worktree_root": "C:/worktrees",
+  "worktree_base_dir": "C:/Users/you/repos",
+  "worktree_org": "your-github-owner",
   "usage_api": true,
   "usage_poll_seconds": 60,
   "stats_retention_days": 31,
@@ -182,9 +184,31 @@ and can be deleted at any time; it will rebuild.
 
 ## The worktree board
 
-There is no worktree view in the app — the star map covers the same ground. The
-collector is still shipped as a CLI, because the `/wt` Claude skill reads it:
-`claudetop-wt --json` prints ticket worktrees with branch, clean/dirty,
-ahead/behind and PR state, and `claudetop-wt` with no arguments prints a table.
-It reads `worktree_root`, `worktree_base_dir` and `worktree_org` from the same
-config file.
+Optional, and off unless you configure it. If you keep one git worktree per
+repo per ticket, `claudetop-wt` prints them with branch, clean/dirty,
+ahead/behind and PR state, and `claudetop-wt --json` prints the same for a
+script or a Claude skill to read. There is no view for it inside the app — the
+star map covers the same ground.
+
+It expects `<worktree_root>/<ticket>/<repo>`, with the base clones those
+worktrees hang off in `<worktree_base_dir>/<repo>`. Set `worktree_root` to turn
+it on, `worktree_org` to get PR state from `gh`, and
+`worktree_ticket_glob` (e.g. `"PROJ-*"`) if the root holds anything that is not
+a ticket.
+
+A fresh worktree is missing everything git does not track, so a repo can look
+clean and still not build. Name what a build needs per repo and the board flags
+the worktrees that do not have it. An entry is a path that must exist, or a
+path that must contain a string — for the local-only edits that never get
+committed:
+
+```json
+"worktree_bootstrap": {
+  "my-rust-svc": [
+    ".cargo/config.toml",
+    { "path": "Cargo.toml", "contains": "gdal = \"0.17" }
+  ]
+}
+```
+
+Repos with a `package.json` are judged by `node_modules` with no config needed.

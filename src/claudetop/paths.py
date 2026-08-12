@@ -61,13 +61,17 @@ def ensure(path: Path) -> Path:
 
 CONFIG_FILE = "config.json"
 
-# Everything a teammate might reasonably need to change on their own machine.
-# Anything EVA-specific lives here so the rest of the code stays generic.
+# Everything a user might reasonably need to change on their own machine.
+# Anything workflow-specific lives here so the rest of the code stays generic.
 DEFAULT_CONFIG = {
     "theme": {},                  # color overrides, see theme.py
-    "worktree_root": None,        # e.g. "C:/eva-wt"; null disables the 'w' view
-    "worktree_base_dir": None,    # base clones dir, defaults to ~/turing-analytics
-    "worktree_org": None,         # GitHub org for `gh pr` lookups
+    # The claudetop-wt board. Off until worktree_root is set; see worktrees.py.
+    "worktree_root": None,        # dir holding <ticket>/<repo> worktrees
+    "worktree_base_dir": None,    # dir holding the base clones
+    "worktree_org": None,         # GitHub owner for `gh pr`; null skips lookups
+    "worktree_ticket_glob": "*",  # which children of the root are tickets
+    "worktree_main_branch": "main",
+    "worktree_bootstrap": {},     # {repo: [untracked paths a build needs]}
     "usage_api": True,            # poll api.anthropic.com/api/oauth/usage
     "usage_poll_seconds": 60,
     "stats_retention_days": 31,   # how long per-message detail is kept in cache

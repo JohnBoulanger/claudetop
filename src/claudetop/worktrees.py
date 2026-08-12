@@ -1,19 +1,17 @@
-"""Collector for the EVA ticket-worktree board.
+"""Collector for a ticket-worktree board.
 
-Single source of truth for worktree state, with three consumers:
-  - dashboard.py renders it as claudetop's 'w' view (via start_background()
-    + snapshot(), so no git/gh call ever runs on the UI thread)
-  - `python worktrees.py --json` feeds the /wt Claude skill
-  - `python worktrees.py` prints a plain table for a quick look
+Optional. It is off until you set `worktree_root` in the claudetop config,
+and it assumes one layout:
+
+  <worktree_root>/<ticket>/<repo>     one worktree per repo, per ticket
+  <worktree_base_dir>/<repo>          the base clones those worktrees hang off
+
+Two consumers:
+  - `claudetop-wt --json` for scripts and Claude skills
+  - `claudetop-wt` prints a plain table for a quick look
 
 Read-only by design: it never fetches, prunes, or touches a working tree.
-Ahead/behind numbers are as-of-last-fetch, same policy as the /wt skill.
-
-Layout conventions (see the /ship skill; centralised here so a future
-config file for team use only has to replace this block):
-  worktrees   C:\\eva-wt\\EVA-<TICKET>\\<repo>   branch EVA-<TICKET>-<short>
-  base clones C:\\Users\\<user>\\turing-analytics\\<repo>
-  shared rust target C:\\eva-wt\\_cargo-target (never a worktree/orphan)
+Ahead/behind numbers are as-of-last-fetch.
 """
 
 import argparse
@@ -26,22 +24,29 @@ from pathlib import Path
 
 from . import paths
 
-# Layout is per-machine, so it comes from the claudetop config:
-#   worktree_root      where /ship puts ticket worktrees
-#   worktree_base_dir  where the base clones live
-#   worktree_org       GitHub org, for `gh pr` lookups
-# With no config the old EVA defaults still apply, so nothing changes for an
-# existing install.
+# Layout is per-machine, so all of it comes from the claudetop config:
+#   worktree_root        where the ticket worktrees live; unset disables this
+#   worktree_base_dir    where the base clones live
+#   worktree_org         GitHub owner, for `gh pr` lookups; unset skips them
+#   worktree_ticket_glob which child dirs of the root count as tickets
+#   worktree_main_branch what "behind main" is measured against
+#   worktree_bootstrap   {repo: [paths that must exist]}, see bootstrap_state
 _CFG = paths.load_config()
-WT_ROOT = Path(_CFG.get("worktree_root") or "C:/eva-wt")
-BASE_DIR = Path(_CFG.get("worktree_base_dir") or (Path.home() / "turing-analytics"))
-ORG = _CFG.get("worktree_org") or "Turing-Analytics-Inc"
-CARGO_TARGET = WT_ROOT / "_cargo-target"
+_root = _CFG.get("worktree_root")
+WT_ROOT = Path(_root) if _root else None
+_base = _CFG.get("worktree_base_dir")
+BASE_DIR = Path(_base) if _base else None
+ORG = _CFG.get("worktree_org") or None
+TICKET_GLOB = _CFG.get("worktree_ticket_glob") or "*"
+MAIN_BRANCH = _CFG.get("worktree_main_branch") or "main"
+BOOTSTRAP = _CFG.get("worktree_bootstrap") or {}
+# Anything the root holds that is not a ticket: shared build caches and such.
+IGNORE_DIRS = {"_cargo-target"}
 
 GIT_TIMEOUT = 8       # seconds per git call
 GH_TIMEOUT = 15       # seconds per gh call
 PR_TTL = 60           # seconds a PR lookup stays fresh
-BEHIND_MAIN_LIMIT = 50  # "far behind main" heuristic, same as the /wt skill
+BEHIND_MAIN_LIMIT = 50  # commits behind main before a worktree is flagged stale
 
 
 def _run(args, cwd=None, timeout=GIT_TIMEOUT):
@@ -62,24 +67,47 @@ def _git(path, *args):
 
 # ---------------------------------------------------------------- bootstrap
 
+def _satisfied(wt: Path, req):
+    """One worktree_bootstrap entry: a path, or {path, contains}. A malformed
+    entry counts as unmet rather than crashing the scan thread."""
+    if isinstance(req, str):
+        return (wt / req).exists()
+    if not isinstance(req, dict) or not req.get("path"):
+        return False
+    target = wt / req["path"]
+    needle = req.get("contains")
+    if needle is None:
+        return target.exists()
+    try:
+        return needle in target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
 def bootstrap_state(wt: Path, repo: str):
-    """Can this worktree build? Encodes the per-repo local-config rules
-    (see the eva-data-svc-rs / eva-pad-generator-svc build memories)."""
-    if repo == "eva-data-svc-rs":
-        # Local-only gdal 0.17 pin, applied by scripts/setup_gdal_windows.ps1.
-        try:
-            cargo = (wt / "Cargo.toml").read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return "missing"
-        return "ok" if 'gdal = "0.17' in cargo else "missing"
-    if repo == "eva-pad-generator-svc":
-        # .cargo/config.toml + winlibs are git-excluded; copied from base clone.
-        cfg = wt / ".cargo" / "config.toml"
-        lib = wt / ".cargo" / "winlibs" / "sqlite3.lib"
-        return "ok" if cfg.exists() and lib.exists() else "missing"
+    """Can this worktree build?
+
+    A fresh worktree is missing everything git does not track, so a repo can
+    look clean and still not build. List what a build needs, per repo, in the
+    config. An entry is either a path that must exist, or a path that must
+    contain a string — for the local-only edits that never get committed:
+
+        "worktree_bootstrap": {
+          "my-rust-svc": [
+            ".cargo/config.toml",
+            {"path": "Cargo.toml", "contains": "gdal = \\"0.17"}
+          ]
+        }
+
+    With no entry, a JS repo is judged by node_modules and anything else is
+    'n/a' rather than guessed at.
+    """
+    required = BOOTSTRAP.get(repo)
+    if required:
+        return "ok" if all(_satisfied(wt, r) for r in required) else "missing"
     if (wt / "package.json").exists():
         return "ok" if (wt / "node_modules").exists() else "missing"
-    return "n/a"  # C# services, integration-tests, Rust repos w/o local config
+    return "n/a"
 
 
 # ------------------------------------------------------------------- scan
@@ -113,7 +141,7 @@ def _worktree_row(ticket_dir: Path, wt: Path):
     else:
         row["unpushed"] = True
 
-    rc, n = _git(wt, "rev-list", "--count", "HEAD..origin/main")
+    rc, n = _git(wt, "rev-list", "--count", f"HEAD..origin/{MAIN_BRANCH}")
     if rc == 0 and n.isdigit():
         row["behind_main"] = int(n)
     return row
@@ -122,7 +150,7 @@ def _worktree_row(ticket_dir: Path, wt: Path):
 def _registered_worktrees():
     """path -> base repo, for every extra worktree each base clone registers."""
     reg = {}
-    if not BASE_DIR.exists():
+    if not BASE_DIR or not BASE_DIR.exists():
         return reg
     for base in sorted(BASE_DIR.iterdir()):
         if not (base / ".git").exists():
@@ -145,12 +173,12 @@ def scan():
     """One full read-only pass. Returns {rows, orphans, scanned_at}."""
     rows = []
     on_disk = set()
-    if WT_ROOT.exists():
-        for ticket_dir in sorted(WT_ROOT.glob("EVA-*")):
-            if not ticket_dir.is_dir():
+    if WT_ROOT and WT_ROOT.exists():
+        for ticket_dir in sorted(WT_ROOT.glob(TICKET_GLOB)):
+            if not ticket_dir.is_dir() or ticket_dir.name in IGNORE_DIRS:
                 continue
             for wt in sorted(ticket_dir.iterdir()):
-                if not wt.is_dir() or wt == CARGO_TARGET:
+                if not wt.is_dir() or wt.name in IGNORE_DIRS:
                     continue
                 on_disk.add(str(wt.resolve()).replace("\\", "/").lower())
                 rows.append(_worktree_row(ticket_dir, wt))
@@ -198,6 +226,8 @@ def _fetch_pr(repo, branch):
 def refresh_prs(rows):
     """Fetch PR state for every row whose cache entry is stale. Sequential on
     purpose (never hammer gh); callers run this off the UI thread."""
+    if not ORG:
+        return
     now = time.time()
     for r in rows:
         if not r["branch"]:
@@ -219,7 +249,9 @@ def _pr_done(pr):
 
 
 def compute_flags(rows):
-    """The /wt skill's 3a/3b lists, from a scan + whatever PR data exists."""
+    """Two lists from a scan plus whatever PR data has arrived: tickets whose
+    every worktree is finished and safe to delete, and worktrees that need a
+    look."""
     by_ticket = {}
     for r in rows:
         by_ticket.setdefault(r["ticket"], []).append(r)
@@ -307,11 +339,17 @@ def _fmt_pr(pr):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="EVA ticket-worktree board")
+    ap = argparse.ArgumentParser(description="Ticket-worktree board")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--no-pr", action="store_true", help="skip gh PR lookups")
-    ap.add_argument("ticket", nargs="?", help="scope to one EVA-XXXX ticket")
+    ap.add_argument("ticket", nargs="?", help="scope to one ticket")
     args = ap.parse_args()
+
+    if not WT_ROOT:
+        msg = ('Set "worktree_root" in the claudetop config to use this '
+               f'({paths.config_dir() / paths.CONFIG_FILE}).')
+        print(json.dumps({"error": msg}) if args.json else msg)
+        return
 
     data = scan()
     if args.ticket:
@@ -328,7 +366,7 @@ def main():
         return
 
     if not data["rows"]:
-        print("No ticket worktrees under C:\\eva-wt.")
+        print(f"No ticket worktrees under {WT_ROOT}.")
     else:
         print(f"{'Ticket':<10} {'Repo':<26} {'Branch':<30} {'Clean':<6} "
               f"{'A/B':<10} {'PR':<18} Bootstrap")
@@ -338,7 +376,7 @@ def main():
                   f"{clean:<6} {_fmt_ab(r):<10} {_fmt_pr(r.get('pr')):<18} "
                   f"{r['bootstrap']}")
     f = data["flags"]
-    print(f"\nship-done candidates: "
+    print(f"\nfinished, safe to delete: "
           f"{', '.join(f['ship_done_candidates']) or 'none'}")
     if f["problems"]:
         for p in f["problems"]:
