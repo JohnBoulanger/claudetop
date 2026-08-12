@@ -65,22 +65,27 @@ field continuous across a panel edge while leaving the text readable.
 
 ## Install
 
-Requires Python 3.10 or newer.
+Requires Python 3.10 or newer. Install it into its own environment so it never
+collides with a project's dependencies:
 
 ```bash
-# recommended: an isolated install with its own venv
-pipx install git+<your repo url>
-
-# or from a clone
-pipx install .
-
-# or plain pip
-pip install .
+uv tool install git+https://github.com/JohnBoulanger/claudetop
+# or, if you use pipx instead
+pipx install git+https://github.com/JohnBoulanger/claudetop
 ```
 
 Then run `claudetop`.
 
-Works on Windows and macOS. Nothing in the dashboard is platform-specific; the
+To try it once without installing anything:
+
+```bash
+uvx --from git+https://github.com/JohnBoulanger/claudetop claudetop
+```
+
+To upgrade later, `uv tool upgrade claudetop` or `pipx upgrade claudetop`.
+Working on it instead: clone, then `uv tool install --editable .`.
+
+Windows, macOS and Linux. Nothing in the dashboard is platform-specific; the
 optional pywin32 dependency is only used by the separate Ctrl+Alt+M hotkey
 script in `scripts/`, which raises the dashboard window on Windows.
 

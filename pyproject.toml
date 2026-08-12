@@ -37,7 +37,8 @@ claudetop = "claudetop.__main__:main"
 claudetop-wt = "claudetop.worktrees:main"
 
 [project.urls]
-Homepage = "https://github.com/"
+Homepage = "https://github.com/JohnBoulanger/claudetop"
+Issues = "https://github.com/JohnBoulanger/claudetop/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claudetop"]
