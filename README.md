@@ -11,14 +11,7 @@ OAuth token Claude Code already holds. Nothing is sent anywhere else, the token
 is never copied or logged, and no session is ever started, stopped or written
 to. Set `"usage_api": false` in the config to drop the network call entirely.
 
-```
-✻ Claude Sessions
-6 sessions · polling ~/.claude
-
-  Status         Name              Kind          Branch   Cost      Uptime   PID
-  ⠹ Marinating…  refactor          background    HEAD     $398.49   92h31m   48848
-  ○ idle         reviewer          interactive   HEAD     $5.10     1h37m    38000
-```
+<img width="1216" height="1270" alt="Screenshot 2026-08-12 145157" src="https://github.com/user-attachments/assets/5ad5884c-cfed-4c1b-8576-aab4f6d54239" />
 
 ## Views
 
