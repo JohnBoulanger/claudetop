@@ -1,5 +1,7 @@
 # claudetop
 
+[![ci](https://github.com/JohnBoulanger/claudetop/actions/workflows/ci.yml/badge.svg)](https://github.com/JohnBoulanger/claudetop/actions/workflows/ci.yml)
+
 A live terminal dashboard for Claude Code: what is running right now, what it
 is costing, and how close you are to your subscription limits.
 
